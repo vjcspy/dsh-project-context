@@ -1,0 +1,9 @@
+# dsh-project-agents bundle patch: mounts the plugin on the host plane under the
+# stable id `dsh-project-agents`. The plugin registers no tool of its own; it
+# discovers markdown agent definitions under each Agent's project root and
+# mounts one first-party `@deepseek-ai/dsh-tool-subagent` instance per
+# definition into that Agent's own context scope.
+
+- insert:
+    - id: dsh-project-agents
+      name: 'dsh-project-agents'
