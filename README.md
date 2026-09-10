@@ -113,12 +113,41 @@ worst case near 21 KB of every request.
 
 ## Diagnostics
 
-Invalid files are skipped and aggregated into one host-logger report per
-discovery — never thrown. A synchronous `agent/created` listener that throws
-vetoes Agent publication, so one typo must not be able to break Agent creation.
+Invalid files are skipped and aggregated into one report per discovery — never
+thrown. A synchronous `agent/created` listener that throws vetoes Agent
+publication, so one typo must not be able to break Agent creation.
 
-> **Caveat.** These reports go to `ctx.logger.warn`. The shipped `web` profile
-> mounts no console log exporter, so the report is not visible on stdout there.
+The host logger alone cannot carry that report to the operator: cordis delivers
+`ctx.logger` records to registered exporters only, and the shipped `web` profile
+mounts none, so a warning lands in an in-memory ring buffer and is dropped on
+exit. One discovery pass therefore produces three channels:
+
+| Channel | Who sees it | Where it comes from |
+| --- | --- | --- |
+| Host log | anyone with a log exporter | `renderReport` — complete, with `error:` / `notice:` labels |
+| Agent catalog section | the model, on every surface | `renderSurfacedDiagnostics` — bounded block in `project-agents:catalog` |
+| Web GUI banner | the operator, unasked | `renderWebNotice` — a `webserver/index-inject` body script |
+
+The catalog block is emitted even when **nothing** mounted, because that is
+exactly the case a log-only report lost: the model can then answer "why is the
+agent I declared missing?" instead of guessing. The banner is host-only (no
+client bundle) and dismissible.
+
+Rules that keep these channels safe:
+
+- **Only `error` diagnostics are surfaced.** A `notice` records an ordinary
+  precedence outcome — the project file shadowing a global one — which is not
+  something to fix.
+- **Surfaced text is brace-sanitized.** A rejection reason quotes the offending
+  construct, so the diagnostic for a file containing `{{name}}` itself contains
+  `{{ … }}`. Interpolation throws on any balanced reference in an assembled
+  section, so surfacing the raw reason would kill prompt assembly — the exact
+  failure the frontmatter guard prevents. `sanitizeForPrompt` splits every
+  adjacent brace pair.
+- **Both channels are bounded**: at most 5 rows, each reason truncated to 200
+  characters, with a trailing count of what was dropped.
+- **The banner payload cannot inject markup.** It is JSON-encoded with `<`
+  escaped, and the DOM is built with `textContent`.
 
 ## Development
 
@@ -129,8 +158,15 @@ pnpm test             # unit + real-composition suites
 pnpm run build        # emit lib/
 ```
 
-Install into a scratch profile:
+Install into a profile:
 
 ```sh
-DSH_HOME=/tmp/dsh-scratch pnpm dsh plugin --profile web add file:/abs/path/to/dsh-project-agents
+pnpm dsh plugin --profile web add file:/abs/path/to/dsh-project-agents
 ```
+
+> **`file:` installs are copies, not links.** pnpm materializes the package into
+> `<profile>/node_modules` from the `files` list, so a later edit to this repo
+> does **not** reach an installed profile. Re-run the `add` (or `pnpm install` in
+> the profile) after changing `lib/`. The package's own harness imports resolve
+> through `$DSH_HOME/profiles/node_modules`, which the launcher links to the
+> source checkout.

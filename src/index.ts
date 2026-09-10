@@ -22,16 +22,17 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-// Side-effect type imports: these declare the `tools`, `subagents` and
-// `systemPrompt` service keys this module reads through `ctx.get()`.
+// Side-effect type imports: these declare the `tools`, `subagents`,
+// `systemPrompt` and `webserver/index-inject` seams this module reads.
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
+import type {} from '@deepseek-ai/dsh-host-webserver'
 import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
 import { capabilityRejection, renderCatalog, resolveAgents, toSubagentConfig } from './config-mapping.ts'
-import { DiagnosticSink, renderReport } from './diagnostics.ts'
+import { DiagnosticSink, errorsOf, renderReport, renderWebNotice } from './diagnostics.ts'
 import { discover, resolveBounds } from './discovery.ts'
-import type { Config, ResolvedAgent, ResourceBounds, Roster } from './types.ts'
+import type { Config, Diagnostic, ResolvedAgent, ResourceBounds, Roster } from './types.ts'
 
 export const name = 'dsh-project-agents'
 
@@ -77,6 +78,12 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   const installed = new Map<Agent, () => void>()
   const rosters = new WeakMap<Agent, Roster>()
+  /**
+   * The most recent diagnostics per Agent cwd. Kept only so the web notice can
+   * report them: the host logger is not visible on a profile without a log
+   * exporter, so this is the one channel that reaches the operator unasked.
+   */
+  const reports = new Map<string, readonly Diagnostic[]>()
 
   /**
    * Resolve the roster for one Agent. A child Agent reuses its parent's
@@ -110,9 +117,15 @@ export function apply(ctx: Context, config: Config = {}): void {
       return
     }
     rosters.set(agent, roster)
+    // Publish the pass for the web notice even when nothing mounted — a pass
+    // that skipped every file is exactly the case a log-only report lost. A
+    // later Agent for the same cwd replaces the entry, so fixing a file clears
+    // the banner as soon as the next roster is resolved.
+    reports.set(roster.cwd, roster.diagnostics)
     const report = renderReport(roster.diagnostics, roster.agents.length, roster.cwd)
     if (report !== undefined) ctx.logger.warn(report)
-    if (roster.agents.length === 0) return
+    // Nothing to mount and nothing for the operator to fix: stay out of the way.
+    if (roster.agents.length === 0 && errorsOf(roster.diagnostics).length === 0) return
 
     const disposers: Array<() => unknown> = []
     // Populated by each fiber that actually registered its tool; the catalog
@@ -129,7 +142,10 @@ export function apply(ctx: Context, config: Config = {}): void {
           name: CATALOG_SECTION,
           // Immediately after the first-party delegation-tool guidance.
           order: systemPrompt.getSectionOrder('TOOL_SUBAGENT') + 1,
-          text: () => renderCatalog(roster.agents.filter(entry => mountedToolNames.has(entry.toolName))),
+          text: () => renderCatalog(
+            roster.agents.filter(entry => mountedToolNames.has(entry.toolName)),
+            roster.diagnostics,
+          ),
         }))
       }
 
@@ -172,6 +188,20 @@ export function apply(ctx: Context, config: Config = {}): void {
     })
   }
 
+  // The host logger reaches registered exporters only, and a profile that
+  // mounts none (the shipped `web` profile among them) drops every warning into
+  // an in-memory ring buffer nobody reads. This listener is therefore the only
+  // channel that tells the operator about a skipped file without being asked,
+  // and it needs no client bundle: `webserver/index-inject` is a host-plane seam
+  // (`packages/host/webserver/src/index.ts:341-351`). When no webserver is
+  // composed the event simply never fires.
+  ctx.on('webserver/index-inject', (table) => {
+    const notice = renderWebNotice(
+      [...reports.entries()].map(([cwd, diagnostics]) => ({ cwd, diagnostics })),
+    )
+    if (notice !== undefined) table.push({ kind: 'script', placement: 'body', text: notice })
+  })
+
   for (const agent of ctx.agents.list()) install(agent)
   ctx.on('agent/created', ({ agent }) => { install(agent) })
   ctx.on('agent/disposed', ({ agent }) => {
@@ -182,5 +212,6 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => () => {
     for (const dispose of installed.values()) dispose()
     installed.clear()
+    reports.clear()
   }, 'dsh-project-agents.scopedAgents()')
 }

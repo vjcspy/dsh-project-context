@@ -112,7 +112,11 @@ function scanLayer(
     return found
   }
   if (names.length > MAX_DIRECTORY_ENTRIES) {
-    sink.add({ path: directory, reason: `directory holds more than ${String(MAX_DIRECTORY_ENTRIES)} entries; not scanned` })
+    sink.add({
+      severity: 'error',
+      path: directory,
+      reason: `directory holds more than ${String(MAX_DIRECTORY_ENTRIES)} entries; not scanned`,
+    })
     return found
   }
   for (const name of names.filter(entry => entry.endsWith('.md')).sort()) {
@@ -124,15 +128,23 @@ function scanLayer(
       if (!stats.isFile()) continue
       size = stats.size
     } catch (error: unknown) {
-      sink.add({ path, reason: `cannot stat: ${String(error)}` })
+      sink.add({ severity: 'error', path, reason: `cannot stat: ${String(error)}` })
       continue
     }
     if (size > bounds.maxFileBytes) {
-      sink.add({ path, reason: `file is ${String(size)} bytes, above the ${String(bounds.maxFileBytes)}-byte per-file cap` })
+      sink.add({
+        severity: 'error',
+        path,
+        reason: `file is ${String(size)} bytes, above the ${String(bounds.maxFileBytes)}-byte per-file cap`,
+      })
       continue
     }
     if (state.total + size > bounds.maxTotalBytes) {
-      sink.add({ path, reason: `total definition bytes would exceed the ${String(bounds.maxTotalBytes)}-byte cap; discovery stopped here` })
+      sink.add({
+        severity: 'error',
+        path,
+        reason: `total definition bytes would exceed the ${String(bounds.maxTotalBytes)}-byte cap; discovery stopped here`,
+      })
       state.capped = true
       return found
     }
@@ -140,7 +152,7 @@ function scanLayer(
     try {
       text = readFileSync(path, 'utf8')
     } catch (error: unknown) {
-      sink.add({ path, reason: `cannot read: ${String(error)}` })
+      sink.add({ severity: 'error', path, reason: `cannot read: ${String(error)}` })
       continue
     }
     state.total += size
@@ -197,6 +209,7 @@ export function discover(
       const existing = byName.get(file.fields.name)
       if (seenInLayer.has(file.fields.name)) {
         sink.add({
+          severity: 'error',
           path: file.path,
           field: 'name',
           reason: `duplicate agent name "${file.fields.name}" within the same layer (also declared by ${String(claimed.get(file.fields.name))})`,
@@ -205,8 +218,11 @@ export function discover(
       }
       seenInLayer.add(file.fields.name)
       if (existing !== undefined) {
-        // Project shadows global; report it so a surprising override is visible.
+        // Project shadows global; report it so a surprising override is
+        // visible, but as a notice: this is the chosen precedence working,
+        // not a definition the operator has to repair.
         sink.add({
+          severity: 'notice',
           path: file.path,
           field: 'name',
           reason: `shadowed by the project definition of "${file.fields.name}" at ${existing.path}`,
@@ -222,6 +238,7 @@ export function discover(
   if (ordered.length > bounds.maxAgents) {
     for (const dropped of ordered.slice(bounds.maxAgents)) {
       sink.add({
+        severity: 'error',
         path: dropped.path,
         reason: `above the ${String(bounds.maxAgents)}-agent cap for this project; not mounted`,
       })

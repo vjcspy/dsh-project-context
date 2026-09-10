@@ -45,6 +45,8 @@ function fail(path: string, reason: string, field?: string, offset?: { text: str
   return {
     ok: false,
     diagnostic: {
+      // A rejected file is never usable, so it is always an `error`.
+      severity: 'error',
       path,
       reason,
       ...(field === undefined ? {} : { field }),

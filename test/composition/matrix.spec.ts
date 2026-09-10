@@ -6,6 +6,7 @@
 
 import { afterEach, expect, test } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import * as SpawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { boot, definition, makeWorkspace, recordedRequests, setScript } from './harness.ts'
@@ -113,6 +114,81 @@ test('a malformed file is reported and skipped while Agent creation still succee
   await booted.prompt(agent, 'hi')
   expect(toolNames(recordedRequests[0])).toContain('agent_analyst')
   expect(toolNames(recordedRequests[0])).not.toContain('agent_not_a_slug')
+})
+
+test('a skipped file is named in the FIRST model request, not only in the host log', async () => {
+  const project = workspace('surfaced-error')
+  project.write('analyst', definition('analyst', 'Reads code.'))
+  project.write('broken', '---\nname: broken\ndescription: d\nbogusKey: 1\n---\nbody\n')
+  booted = await boot(NO_GLOBAL)
+  const agent = await booted.createAgent('surfaced-error', project.root)
+  await booted.prompt(agent, 'hi')
+
+  const text = systemText(recordedRequests[0])
+  expect(toolNames(recordedRequests[0])).toEqual(['agent_analyst'])
+  // The host logger cannot reach the operator on a profile without a log
+  // exporter, so the model has to be able to answer "why is my agent missing?".
+  expect(text).toContain('broken.md')
+  expect(text).toContain('unknown frontmatter key')
+})
+
+test('a roster that mounted nothing still explains itself in the FIRST model request', async () => {
+  const project = workspace('surfaced-only-error')
+  project.write('broken', '---\nname: broken\ndescription: d\nbogusKey: 1\n---\nbody\n')
+  booted = await boot(NO_GLOBAL)
+  const agent = await booted.createAgent('surfaced-only-error', project.root)
+  await booted.prompt(agent, 'hi')
+
+  expect(toolNames(recordedRequests[0])).toEqual([])
+  const text = systemText(recordedRequests[0])
+  expect(text).toContain('broken.md')
+  expect(text).not.toContain('Project-scoped subagents available')
+})
+
+test('a surfaced reason quoting `{{ }}` cannot break prompt assembly', async () => {
+  const project = workspace('surfaced-hazard')
+  project.write('templater', definition('templater', 'Renders {{name}} templates.'))
+  booted = await boot(NO_GLOBAL)
+  const agent = await booted.createAgent('surfaced-hazard', project.root)
+  // The rejection reason itself quotes `{{ … }}`; surfaced unfiltered it would
+  // throw inside prompt assembly, so a single completed request is the proof.
+  await booted.prompt(agent, 'hi')
+
+  expect(recordedRequests).toHaveLength(1)
+  const text = systemText(recordedRequests[0])
+  expect(text).toContain('templater.md')
+  expect(text).not.toContain('{{')
+  expect(text).not.toContain('}}')
+})
+
+test('the web notice row names the skipped file for the operator', async () => {
+  const project = workspace('web-notice')
+  project.write('broken', '---\nname: broken\ndescription: d\nbogusKey: 1\n---\nbody\n')
+  booted = await boot(NO_GLOBAL)
+  await booted.createAgent('web-notice', project.root)
+  await Promise.resolve()
+
+  const table: IndexInjection[] = []
+  booted.ctx.emit('webserver/index-inject', table)
+
+  expect(table).toHaveLength(1)
+  const row = table[0]
+  expect(row?.kind).toBe('script')
+  const text = row?.kind === 'script' ? row.text : ''
+  expect(text).toContain('broken.md')
+  expect(text).toContain(project.root)
+})
+
+test('a clean project injects no web notice at all', async () => {
+  const project = workspace('web-notice-clean')
+  project.write('analyst', definition('analyst', 'Reads code.'))
+  booted = await boot(NO_GLOBAL)
+  await booted.createAgent('web-notice-clean', project.root)
+  await Promise.resolve()
+
+  const table: IndexInjection[] = []
+  booted.ctx.emit('webserver/index-inject', table)
+  expect(table).toEqual([])
 })
 
 test('a safe body with an unsafe `{{ }}` description is rejected without breaking assembly', async () => {

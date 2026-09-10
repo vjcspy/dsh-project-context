@@ -81,8 +81,21 @@ export interface ResolvedAgent {
   readonly layer: Layer
 }
 
+/**
+ * How one diagnostic changes what the operator can use.
+ *
+ * `error` means a definition was skipped or the roster was truncated, so the
+ * agent the file declares is NOT available and the operator has to act.
+ * `notice` reports an ordinary precedence outcome — the project file won the
+ * name collision, exactly as designed — which must not be presented as a
+ * problem to fix.
+ */
+export type DiagnosticSeverity = 'error' | 'notice'
+
 /** One skipped file or cap violation, aggregated into a single host-log report. */
 export interface Diagnostic {
+  /** Whether the operator has to act on this. */
+  readonly severity: DiagnosticSeverity
   /** Absolute path of the offending file, or the directory for a cap violation. */
   readonly path: string
   /** Human-readable cause. */
