@@ -72,6 +72,14 @@ export type { ProjectRuleChange, ProjectRulesSource } from './message-source.ts'
 export const CATALOG_SECTION = 'project-agents:catalog'
 
 /**
+ * Capabilities that get their own web-notice banner, in render order.
+ *
+ * Kept as a named constant so adding a third capability cannot quietly skip
+ * the banner the way the rules capability did.
+ */
+const RENDERED_CAPABILITIES = ['agents', 'rules'] as const
+
+/**
  * Read the effective pre-mount tool-name universe for one Agent scope. A
  * scoped tool silently shadows a global one, so a generated name must be
  * checked against what the Agent can already see.
@@ -227,10 +235,17 @@ export function apply(ctx: Context, config: Config = {}): void {
   // (`packages/host/webserver/src/index.ts:341-351`). When no webserver is
   // composed the event simply never fires.
   ctx.on('webserver/index-inject', (table) => {
-    const notice = renderWebNotice(
-      [...reports.entries()].map(([cwd, diagnostics]) => ({ cwd, diagnostics })),
-    )
-    if (notice !== undefined) table.push({ kind: 'script', placement: 'body', text: notice })
+    const groups = [...reports.entries()].map(([cwd, diagnostics]) => ({ cwd, diagnostics }))
+    // ONE ROW PER CAPABILITY. `renderWebNotice` filters the groups to the
+    // capability it is given and defaults to `agents`, so calling it once —
+    // as this handler did until the rules capability shipped — silently
+    // dropped every rules diagnostic on the floor. Each capability also owns
+    // its own DOM id, so the two banners coexist instead of one suppressing
+    // the other through the `getElementById` guard.
+    for (const capability of RENDERED_CAPABILITIES) {
+      const notice = renderWebNotice(groups, capability)
+      if (notice !== undefined) table.push({ kind: 'script', placement: 'body', text: notice })
+    }
   })
 
   // ── project rules ────────────────────────────────────────────────────────
