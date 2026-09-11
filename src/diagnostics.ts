@@ -15,10 +15,55 @@
  * - {@link renderWebNotice} — a body script row for `webserver/index-inject`,
  *   which paints a dismissible banner in the web GUI.
  *
- * @module dsh-project-agents/diagnostics
+ * @module dsh-project-context/diagnostics
  */
 
-import type { Diagnostic, SourceLocation } from './types.ts'
+import type { Capability, Diagnostic, SourceLocation } from './types.ts'
+
+/**
+ * The nouns one capability's report uses.
+ *
+ * The renderers are shared between the two capabilities, but the operator
+ * action differs completely — a skipped agent definition means a missing tool,
+ * a skipped rule file means an instruction that is not in force. Calling a
+ * rule file an "agent definition" (which `renderReport` used to hardcode)
+ * would send the operator to the wrong directory, so the noun is a parameter.
+ */
+export interface CapabilityLabels {
+  /** Singular noun for one skipped unit, e.g. `agent definition`. */
+  readonly unit: string
+  /** Plural suffix appended to {@link unit}; `s` for both current capabilities. */
+  readonly plural: string
+  /** What "mounted" means for this capability, e.g. `mounted` / `loaded`. */
+  readonly retainedVerb: string
+}
+
+/** Labels per capability. */
+export const CAPABILITY_LABELS: Readonly<Record<Capability, CapabilityLabels>> = {
+  agents: { unit: 'agent definition', plural: 's', retainedVerb: 'mounted' },
+  rules: { unit: 'rule file', plural: 's', retainedVerb: 'loaded' },
+}
+
+/** Stable plugin identity used in every operator-facing string. */
+export const PLUGIN_LABEL = 'dsh-project-context'
+
+/** DOM id of the web banner, parameterized per capability. */
+export function noticeDomId(capability: Capability): string {
+  return `${PLUGIN_LABEL}-${capability}-notice`
+}
+
+/** The capability a diagnostic belongs to; `agents` where the tag is absent. */
+export function capabilityOf(diagnostic: Diagnostic): Capability {
+  return diagnostic.capability ?? 'agents'
+}
+
+/** Keep only the diagnostics belonging to one capability. */
+export function forCapability(
+  diagnostics: readonly Diagnostic[],
+  capability: Capability,
+): readonly Diagnostic[] {
+  return diagnostics.filter(diagnostic => capabilityOf(diagnostic) === capability)
+}
 
 /** Rows a surfaced block may carry before it is truncated. */
 export const MAX_SURFACED_DIAGNOSTICS = 5
@@ -87,15 +132,18 @@ export function renderLine(diagnostic: Diagnostic): string {
  */
 export function renderReport(
   diagnostics: readonly Diagnostic[],
-  mountedCount: number,
+  retainedCount: number,
   cwd: string,
+  capability: Capability = 'agents',
 ): string | undefined {
   if (diagnostics.length === 0) return undefined
+  const labels = CAPABILITY_LABELS[capability]
   const skipped = errorsOf(diagnostics).length
   const notices = diagnostics.length - skipped
   const plural = (count: number): string => (count === 1 ? '' : 's')
-  const header = `dsh-project-agents: ${String(skipped)} agent definition${plural(skipped)}`
-    + ` skipped for cwd "${cwd}" (${String(mountedCount)} mounted)`
+  const unit = `${labels.unit}${skipped === 1 ? '' : labels.plural}`
+  const header = `${PLUGIN_LABEL}: ${String(skipped)} ${unit}`
+    + ` skipped for cwd "${cwd}" (${String(retainedCount)} ${labels.retainedVerb})`
     + (notices === 0 ? '' : `; ${String(notices)} notice${plural(notices)}`)
   return [header, ...diagnostics.map(diagnostic => `  ${renderLine(diagnostic)}`)].join('\n')
 }
@@ -169,10 +217,15 @@ export interface NoticeGroup {
  * @param groups - current diagnostics per cwd.
  * @returns the script source, or undefined when nothing needs reporting.
  */
-export function renderWebNotice(groups: readonly NoticeGroup[]): string | undefined {
+export function renderWebNotice(
+  groups: readonly NoticeGroup[],
+  capability: Capability = 'agents',
+): string | undefined {
+  const labels = CAPABILITY_LABELS[capability]
+  const domId = noticeDomId(capability)
   const rows: Array<{ cwd: string; text: string }> = []
   for (const group of groups) {
-    for (const diagnostic of errorsOf(group.diagnostics)) {
+    for (const diagnostic of errorsOf(forCapability(group.diagnostics, capability))) {
       rows.push({
         cwd: group.cwd,
         text: `${position(diagnostic)}: ${truncate(diagnostic.reason, MAX_SURFACED_REASON_CHARS)}`,
@@ -187,7 +240,7 @@ export function renderWebNotice(groups: readonly NoticeGroup[]): string | undefi
     + ' try {'
     + ` const rows = ${payload};`
     + ' if (!rows.length) return;'
-    + " const id = 'dsh-project-agents-notice';"
+    + ` const id = ${JSON.stringify(domId)};`
     + ' if (document.getElementById(id)) return;'
     + " const box = document.createElement('div'); box.id = id; box.setAttribute('role', 'alert');"
     + " box.style.cssText = 'position:fixed;z-index:2147483647;left:12px;right:12px;bottom:12px;"
@@ -195,7 +248,7 @@ export function renderWebNotice(groups: readonly NoticeGroup[]): string | undefi
     + "background:#fffbeb;color:#78350f;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;"
     + "box-shadow:0 6px 20px rgba(0,0,0,.18)';"
     + " const title = document.createElement('div');"
-    + " title.textContent = 'dsh-project-agents: ' + rows.length + ' agent definition(s) skipped';"
+    + ` title.textContent = ${JSON.stringify(`${PLUGIN_LABEL}: `)} + rows.length + ${JSON.stringify(` ${labels.unit}(${labels.plural}) skipped`)};`
     + " title.style.cssText = 'font-weight:600;margin-bottom:4px'; box.appendChild(title);"
     + " const list = document.createElement('ul'); list.style.cssText = 'margin:0;padding-left:18px';"
     + ' for (const row of rows) {'

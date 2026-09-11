@@ -24,12 +24,21 @@ importers:
       '@deepseek-ai/dsh-agent':
         specifier: link:../deepseek-harness/packages/core/agent
         version: link:../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-agent-instructions':
+        specifier: link:../deepseek-harness/packages/context/agent-instructions
+        version: link:../deepseek-harness/packages/context/agent-instructions
       '@deepseek-ai/dsh-agent-loop':
         specifier: link:../deepseek-harness/packages/core/agent-loop
         version: link:../deepseek-harness/packages/core/agent-loop
       '@deepseek-ai/dsh-agent-loop-testkit':
         specifier: link:../deepseek-harness/packages/test-support/agent-loop-testkit
         version: link:../deepseek-harness/packages/test-support/agent-loop-testkit
+      '@deepseek-ai/dsh-fs':
+        specifier: link:../deepseek-harness/packages/fs/fs
+        version: link:../deepseek-harness/packages/fs/fs
+      '@deepseek-ai/dsh-fs-local':
+        specifier: link:../deepseek-harness/packages/fs/fs-local
+        version: link:../deepseek-harness/packages/fs/fs-local
       '@deepseek-ai/dsh-host-webserver':
         specifier: link:../deepseek-harness/packages/host/webserver
         version: link:../deepseek-harness/packages/host/webserver

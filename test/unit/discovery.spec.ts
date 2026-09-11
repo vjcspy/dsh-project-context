@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { DiagnosticSink } from '../../src/diagnostics.ts'
 import { DEFAULT_BOUNDS, discover, findProjectRoot, globalAgentsDir, resolveBounds } from '../../src/discovery.ts'
-import type { ResourceBounds } from '../../src/types.ts'
+import type { AgentBounds } from '../../src/discovery.ts'
 
 const roots: string[] = []
 
@@ -13,7 +13,7 @@ afterEach(() => {
 })
 
 function tree(): { root: string; project: string; global: string } {
-  const root = mkdtempSync(join(tmpdir(), 'dsh-project-agents-unit-'))
+  const root = mkdtempSync(join(tmpdir(), 'dsh-project-context-unit-'))
   roots.push(root)
   const project = join(root, 'repo')
   mkdirSync(join(project, '.git'), { recursive: true })
@@ -29,7 +29,7 @@ function write(directory: string, name: string, frontmatter: string, body = 'Per
   return path
 }
 
-function run(cwd: string, global: string, bounds: ResourceBounds = DEFAULT_BOUNDS) {
+function run(cwd: string, global: string, bounds: AgentBounds = DEFAULT_BOUNDS) {
   const sink = new DiagnosticSink()
   const result = discover(cwd, { globalAgentsDir: global }, bounds, sink, {})
   return { result, diagnostics: sink.drain() }
@@ -50,7 +50,7 @@ describe('project root resolution', () => {
   test('global definitions still load when no project root exists', () => {
     const { global } = tree()
     write(global, 'shared', 'name: shared\ndescription: Global helper.')
-    const outside = mkdtempSync(join(tmpdir(), 'dsh-project-agents-nogit-'))
+    const outside = mkdtempSync(join(tmpdir(), 'dsh-project-context-nogit-'))
     roots.push(outside)
     const { result } = run(outside, global)
     expect(result.projectRoot).toBeUndefined()

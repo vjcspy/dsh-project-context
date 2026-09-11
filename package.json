@@ -1,7 +1,7 @@
 {
-  "name": "dsh-project-agents",
+  "name": "dsh-project-context",
   "version": "0.1.0",
-  "description": "dsh plugin: discover markdown agent definitions under a project root and mount them as first-party dsh-tool-subagent instances per Agent scope. Registers no tool of its own.",
+  "description": "dsh plugin: project-scoped context. Discovers markdown agent definitions under a project root and mounts them as first-party dsh-tool-subagent instances per Agent scope, and loads markdown rule files from <projectRoot>/.dsh/rules into every Agent as a durable, self-superseding user message. Registers no tool of its own.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -11,6 +11,7 @@
     "dsh",
     "dsh-plugin",
     "subagent",
+    "rules",
     "markdown",
     "project-scoped"
   ],
@@ -37,6 +38,7 @@
     "@deepseek-ai/cordis": ">=4.0.2",
     "@deepseek-ai/dsh-agent": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-host-webserver": ">=0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-session": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-subagent": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-system-prompt": ">=0.1.5-rc.1",
@@ -51,6 +53,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
       "optional": true
     },
     "@deepseek-ai/dsh-session": {
@@ -74,10 +79,13 @@
     "@deepseek-ai/cordis-plugin-include": "link:../deepseek-harness/vendor/include",
     "@deepseek-ai/cordis-plugin-loader": "link:../deepseek-harness/vendor/loader",
     "@deepseek-ai/dsh-agent": "link:../deepseek-harness/packages/core/agent",
+    "@deepseek-ai/dsh-agent-instructions": "link:../deepseek-harness/packages/context/agent-instructions",
     "@deepseek-ai/dsh-agent-loop": "link:../deepseek-harness/packages/core/agent-loop",
     "@deepseek-ai/dsh-agent-loop-testkit": "link:../deepseek-harness/packages/test-support/agent-loop-testkit",
-    "@deepseek-ai/dsh-invariants": "link:../deepseek-harness/packages/runtime-diagnostics/invariants",
+    "@deepseek-ai/dsh-fs": "link:../deepseek-harness/packages/fs/fs",
+    "@deepseek-ai/dsh-fs-local": "link:../deepseek-harness/packages/fs/fs-local",
     "@deepseek-ai/dsh-host-webserver": "link:../deepseek-harness/packages/host/webserver",
+    "@deepseek-ai/dsh-invariants": "link:../deepseek-harness/packages/runtime-diagnostics/invariants",
     "@deepseek-ai/dsh-jobs": "link:../deepseek-harness/packages/jobs/jobs",
     "@deepseek-ai/dsh-jobs-local": "link:../deepseek-harness/packages/jobs/jobs-local",
     "@deepseek-ai/dsh-llm": "link:../deepseek-harness/packages/llm/llm",

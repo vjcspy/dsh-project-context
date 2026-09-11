@@ -1,20 +1,22 @@
 /**
- * Real-Loader composition over the BUILT artifact.
+ * Real-Loader composition over the BUILT artifact, for the rules capability.
  *
- * Two things are proven here that a source-only test cannot prove:
- * - the plugin composes through a real `cordis.yml` read by the Loader, in the
- *   same shape `cordis.patch.yml` inserts into a profile;
- * - `lib/index.js` — the file a profile install actually loads — is what runs,
- *   so a packaging error (a missing export, a bad entry point) fails here.
+ * A source-only test cannot prove what a profile install actually loads. This
+ * one imports `lib/index.js` — the exact file the `file:` install materializes
+ * — through a real `cordis.yml` in the same shape `cordis.patch.yml` inserts,
+ * so a packaging error fails here: a missing export, a bad entry point, or the
+ * `@deepseek-ai/dsh-llm` runtime import not being resolvable from the
+ * installed artifact (the reason a version-range peer was added beside the
+ * `link:` devDependency).
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterAll, afterEach, beforeAll, expect, test } from 'vitest'
+import { afterEach, beforeAll, expect, test } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -31,7 +33,6 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const builtEntry = join(packageRoot, 'lib', 'index.js')
-
 const requests: GenerateOptions[] = []
 
 class ProbeAdapter extends LlmAdapter {
@@ -52,11 +53,14 @@ let context: Context | undefined
 let root: string | undefined
 
 beforeAll(() => {
-  // The built artifact is the subject of this test, so build it if it is stale
-  // or absent rather than silently testing nothing.
-  if (!existsSync(builtEntry)) {
-    execFileSync('npx', ['tsc', '-p', 'tsconfig.json'], { cwd: packageRoot, stdio: 'inherit' })
-  }
+  // The built artifact is the subject, so build it when it is absent or older
+  // than the sources — otherwise this test silently proves nothing.
+  const newestSource = ['index.ts', 'rules-discovery.ts', 'rules-render.ts', 'rules-reconcile.ts', 'message-source.ts']
+    .map(name => join(packageRoot, 'src', name))
+    .filter(path => existsSync(path))
+    .reduce((newest, path) => Math.max(newest, statSync(path).mtimeMs), 0)
+  const stale = !existsSync(builtEntry) || statSync(builtEntry).mtimeMs < newestSource
+  if (stale) execFileSync('npx', ['tsc', '-p', 'tsconfig.json'], { cwd: packageRoot, stdio: 'inherit' })
 })
 
 afterEach(async () => {
@@ -67,18 +71,14 @@ afterEach(async () => {
   requests.length = 0
 })
 
-afterAll(() => { /* the built artifact is left in place for the profile install */ })
-
-test('the built plugin composes through a real cordis.yml and reaches the first request', async () => {
-  root = await mkdtemp(join(tmpdir(), 'dsh-project-context-loader-'))
-  const project = join(root, 'repo')
-  await mkdir(join(project, '.git'), { recursive: true })
-  await mkdir(join(project, '.dsh', 'agents'), { recursive: true })
-  await writeFile(
-    join(project, '.dsh', 'agents', 'analyst.md'),
-    '---\nname: analyst\ndescription: Reads code and returns a synthesis.\n---\nYou are the analyst.\n',
-    'utf8',
-  )
+test('the BUILT plugin delivers project rules verbatim into a real Loader composition', async () => {
+  root = await mkdtemp(join(tmpdir(), 'dsh-project-context-rules-loader-'))
+  const projectDir = join(root, 'repo')
+  await mkdir(join(projectDir, '.git'), { recursive: true })
+  await mkdir(join(projectDir, '.dsh', 'rules'), { recursive: true })
+  const body = 'Never run `git checkout` here. A persona may use `{{model}}`.\n'
+  await writeFile(join(projectDir, '.dsh', 'rules', 'safety.md'), body, 'utf8')
+  await writeFile(join(projectDir, '.dsh', 'rules', 'zz-second.md'), 'SECOND RULE BODY\n', 'utf8')
 
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
@@ -114,7 +114,7 @@ test('the built plugin composes through a real cordis.yml and reaches the first 
   ])
 
   context = new Context()
-  context.baseUrl = pathToFileURL(root).href + '/'
+  context.baseUrl = `${pathToFileURL(root).href}/`
   await context.plugin(Loader)
   context.loader.builtins.include = Include
   context.loader.internal = {
@@ -134,18 +134,21 @@ test('the built plugin composes through a real cordis.yml and reaches the first 
 
   context.llm.registerAdapter(['mock'], new ProbeAdapter())
   const agent = await context.agentLoop.create(
-    SessionId('loader-project-agents'),
+    SessionId('loader-project-rules'),
     { provider: 'mock', model: 'mock' },
-    { cwd: project },
+    { cwd: projectDir },
   )
   agent.followup(createUserMessage({ content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } }))
   await agent.whenIdle()
 
-  const first = requests[0]
-  expect((first?.tools ?? []).map(tool => tool.name)).toContain('agent_analyst')
-  const systemText = (first?.messages.find(message => message.role === 'system')?.content ?? [])
-    .filter(block => block.type === 'text')
-    .map(block => block.text)
-    .join('')
-  expect(systemText).toContain('- `agent_analyst` — Reads code and returns a synthesis.')
+  const rules = (requests[0]?.messages ?? []).filter(message => message.source.kind === 'project-rules')
+  expect(rules).toHaveLength(1)
+  const text = (rules[0]?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('')
+  // Verbatim, braces intact, and ordered by filename.
+  expect(text).toContain(body)
+  expect(text).toContain('SECOND RULE BODY')
+  expect(text.indexOf('safety.md')).toBeLessThan(text.indexOf('zz-second.md'))
+  // `createUserMessage` came from the installed `@deepseek-ai/dsh-llm`, which
+  // is what the added peerDependency exists to guarantee at install time.
+  expect(rules[0]?.source.kind === 'project-rules' ? rules[0].source.form : undefined).toBe('snapshot')
 }, 60_000)

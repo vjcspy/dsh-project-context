@@ -9,7 +9,7 @@
  *   (`packages/subagent/tool-subagent/src/index.ts:313-316`), so `maxDepth` is
  *   always emitted explicitly; an omission would be capless.
  *
- * @module dsh-project-agents/config-mapping
+ * @module dsh-project-context/config-mapping
  */
 
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -184,7 +184,14 @@ export function capabilityRejection(
  * The first-party tool description is generic per transport and background
  * mode (`packages/subagent/tool-subagent/src/index.ts:365-388`), so two
  * instances are textually identical apart from `toolName`. Without this the
- * parent model cannot route among them.
+ * parent model cannot tell them apart at all.
+ *
+ * The block is a DECLARATION, not a policy: it states which agents exist and
+ * what each is for, and stops there. When to delegate, and to which agent, is
+ * project policy that belongs in a rule file under `.dsh/rules` — text that
+ * can change without rebuilding this plugin. Keep usage instructions out of
+ * here; only the diagnostics block below is allowed to instruct, because it is
+ * a delivery channel for per-file failures no static rule file could name.
  *
  * The same section carries the surfaced diagnostics, because this plugin owns
  * no tool and the shipped `web` profile mounts no log exporter: the model is
@@ -204,9 +211,8 @@ export function renderCatalog(
   const parts: string[] = []
   if (agents.length > 0) {
     parts.push(
-      'Project-scoped subagents available in this working directory. Each is a separate',
-      'delegation tool with its own persona, model route and tool access; their generic',
-      'tool descriptions are identical, so choose between them by the roles below.',
+      'Project-scoped subagents declared in this working directory. Each is a separate',
+      'delegation tool with its own persona, model route and tool access.',
       '',
       ...agents.map(agent => `- \`${agent.toolName}\` — ${agent.description}`),
     )

@@ -7,7 +7,7 @@
  *   `toolName` and every default materialized.
  * - the first-party `dsh-tool-subagent` config, produced in `config-mapping.ts`.
  *
- * @module dsh-project-agents/types
+ * @module dsh-project-context/types
  */
 
 /** The `ctx.subagents` transport an agent file delegates through. */
@@ -92,10 +92,22 @@ export interface ResolvedAgent {
  */
 export type DiagnosticSeverity = 'error' | 'notice'
 
+/**
+ * Which of this plugin's two capabilities a diagnostic belongs to.
+ *
+ * The report renderers are shared, but the two capabilities fail for unrelated
+ * reasons and produce unrelated operator actions, so a report that called a
+ * skipped rule file an "agent definition" would be actively misleading. The tag
+ * selects the noun; it is not presentation.
+ */
+export type Capability = 'agents' | 'rules'
+
 /** One skipped file or cap violation, aggregated into a single host-log report. */
 export interface Diagnostic {
   /** Whether the operator has to act on this. */
   readonly severity: DiagnosticSeverity
+  /** Which capability produced this. Defaults to `agents` where omitted. */
+  readonly capability?: Capability
   /** Absolute path of the offending file, or the directory for a cap violation. */
   readonly path: string
   /** Human-readable cause. */
@@ -114,6 +126,80 @@ export interface ResourceBounds {
   readonly maxFileBytes: number
   /** Maximum total size of all read definitions in one discovery pass, in bytes. */
   readonly maxTotalBytes: number
+  /** Maximum number of rule files loaded from one `.dsh/rules` directory. */
+  readonly maxRules: number
+  /** Maximum size of one `*.md` rule file, in bytes. */
+  readonly maxRuleFileBytes: number
+  /**
+   * Maximum UTF-8 size of the COMPLETE rendered rules message, including the
+   * preamble, every per-file header and the closing frame — not of the bodies
+   * alone. `packages/AGENTS.md:16` requires the bound to cover the emitted
+   * value with its wrappers and metadata.
+   */
+  readonly maxRenderedBytes: number
+}
+
+/**
+ * Tri-state observation, mirroring the host's own contract at
+ * `packages/context/agent-instructions/src/files.ts:73-77`.
+ *
+ * The distinction is load-bearing and must never be collapsed: `absent` is a
+ * CONFIRMED non-existence and is the only state that may retract a rule, while
+ * `unavailable` means the state could not be determined (permission error, I/O
+ * failure, a race with atomic replacement) and must preserve last-good content.
+ * Because supersession is durable, treating `unavailable` as `absent` would
+ * permanently deactivate a safety rule that was never actually deleted.
+ */
+export type Observation = 'present' | 'absent' | 'unavailable'
+
+/**
+ * Advisory filesystem identity for one rule file.
+ *
+ * Recorded for diagnostics and for the record only. It is NEVER consulted to
+ * decide that nothing changed: `(path, size, mtime)` compares equal across a
+ * same-length rewrite whose mtime was restored, and a false negative there
+ * silently keeps a superseded instruction in force.
+ */
+export interface MetadataStamp {
+  readonly dev: number
+  readonly ino: number
+  readonly size: number
+  /** High-resolution modification time, in nanoseconds. */
+  readonly mtimeNs: bigint
+  /** High-resolution inode-change time, in nanoseconds. */
+  readonly ctimeNs: bigint
+}
+
+/** One rule file as observed by a single scan. */
+export interface RuleObservation {
+  /** Stable identity: the filename inside `.dsh/rules`. */
+  readonly scope: string
+  /** Absolute path. */
+  readonly path: string
+  /** Whether this scan could determine the file's state. */
+  readonly observation: Observation
+  /** The verbatim body. Present only when `observation` is `present`. */
+  readonly body?: string
+  /** SHA-256 of {@link body}. Present only when `observation` is `present`. */
+  readonly digest?: string
+  /** Advisory identity; never used to skip a read. */
+  readonly stamp?: MetadataStamp
+}
+
+/** The result of one bounded, synchronous rules scan. */
+export interface RuleScan {
+  /** The absolute `.dsh/rules` path, or the path it would have had. */
+  readonly directory: string | undefined
+  /** Whether the directory listing itself could be determined. */
+  readonly directoryObservation: Observation
+  /**
+   * Every `*.md` entry the listing produced, sorted by filename, after the
+   * `maxRules` cap. Entries whose own state could not be determined appear
+   * here with `observation: 'unavailable'`.
+   */
+  readonly files: readonly RuleObservation[]
+  /** The resolved project root, or undefined when no `.git` ancestor exists. */
+  readonly projectRoot: string | undefined
 }
 
 /** Plugin entry configuration. */
@@ -134,6 +220,20 @@ export interface Config {
    * Defaults to `process.cwd()`.
    */
   readonly fallbackCwd?: string
+  /** Turn the project-rules capability off entirely; default `true` (on). */
+  readonly rules?: boolean
+  /** Override {@link ResourceBounds.maxRules}; default 32. */
+  readonly maxRules?: number
+  /** Override {@link ResourceBounds.maxRuleFileBytes}; default 65536. */
+  readonly maxRuleFileBytes?: number
+  /** Override {@link ResourceBounds.maxRenderedBytes}; default 262144. */
+  readonly maxRenderedBytes?: number
+  /**
+   * Directory holding project rules, relative to the project root.
+   * Defaults to `.dsh/rules`. Exposed for tests; there is deliberately no
+   * global layer.
+   */
+  readonly rulesSubdir?: string
 }
 
 /** Immutable roster resolved for one top-level Agent lineage. */

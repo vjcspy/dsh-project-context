@@ -1,15 +1,21 @@
-# dsh-project-agents
+# dsh-project-context
 
-Declare subagents in markdown, per project.
+Project-scoped context for dsh: **subagents** and **rules**, both declared in
+markdown, both per project, both requiring **no change to the harness**.
 
-Drop `analyst.md` into `<repo>/.dsh/agents/`, and an `agent_analyst` delegation
-tool becomes callable in that repo — with its own model, reasoning effort,
-persona and tool restrictions — and only in that repo.
+- Drop `analyst.md` into `<repo>/.dsh/agents/`, and an `agent_analyst`
+  delegation tool becomes callable in that repo — with its own model, reasoning
+  effort, persona and tool restrictions — and only in that repo.
+- Drop any `*.md` into `<repo>/.dsh/rules/`, and its contents reach every Agent
+  working in that repo, verbatim, from the first request.
 
-This plugin **registers no tool of its own**. It mounts first-party
+This plugin **registers no tool of its own**. For agents it mounts first-party
 `@deepseek-ai/dsh-tool-subagent` instances into each Agent's context scope, so
-host upgrades come free and there is no dispatch code to maintain. It requires
-**no change to the harness**.
+host upgrades come free and there is no dispatch code to maintain.
+
+***
+
+# Part 1 — Subagents
 
 ## Discovery
 
@@ -149,7 +155,116 @@ Rules that keep these channels safe:
 - **The banner payload cannot inject markup.** It is JSON-encoded with `<`
   escaped, and the DOM is built with `textContent`.
 
-## Development
+***
+
+# Part 2 — Rules
+
+Every `*.md` in `<projectRoot>/.dsh/rules/` is loaded verbatim, sorted by
+filename, and delivered to each Agent as **one durable user message**. There is
+no frontmatter contract, no recursion and no global layer — flat files, bodies
+untouched.
+
+## Why a user message and not a system-prompt section
+
+Because rule prose has to survive verbatim. `interpolate()` runs over
+system-prompt sections and contexts but **never** over inbox messages, and in a
+section a `{{` with any later `}}` that is not a registered variable throws and
+kills prompt assembly for that Agent. A rule file that documents `{{model}}` is
+a perfectly ordinary thing to write; making it either crash the Agent or get
+silently rewritten to `{ {model} }` would be a defect in an instruction channel.
+On this path there is no hazard, so nothing is sanitized and nothing is
+rejected.
+
+## Why the pre-step waterfall and not the inbox
+
+`AgentLoop.preStep()` **claims** — removes — the entire `next-step` batch
+*before* dispatching the `agent/pre-step` waterfall. By the time any listener
+runs, `inbox.replace` returns `false` (the message is no longer pending) and
+`inbox.prepend` queues for a *later* step. So a rules change delivered through
+the inbox would reach the request *after* the one the user is waiting on.
+
+This plugin folds its message straight into `decision.messages`, the same way
+`@deepseek-ai/dsh-agent-instructions` does. **Editing a rule file changes the
+very next model request, not the one after.**
+
+## Supersession
+
+Session history is append-only, and every user message is serialized to the
+provider in order regardless of its `source.kind`. Removing a *pending* message
+therefore does nothing about a rule the model has already read. Supersession is
+carried three ways:
+
+| Mechanism | Audience | What it does |
+| --- | --- | --- |
+| Snapshot preamble | the model | States in prose that this snapshot replaces every earlier one, and that any rule not repeated no longer applies |
+| `changes` deltas | consumers | `set` / `replace` / `remove` per file on `source.changes` |
+| Clearing message | the model | On a **confirmed** non-empty → empty, an explicit retraction naming what is no longer in force |
+
+The distinct `source.kind: 'project-rules'` is **not** the supersession
+mechanism — it is a non-interference property. `agent-instructions` removes
+every pending message whose kind is `agent-instructions`, so sharing that kind
+would let the two plugins delete each other's input. The kind says nothing to
+the model; the preamble does.
+
+## Change detection
+
+Contents are **digested on every reconciliation**. A `(path, size, mtime)`
+metadata stamp is recorded, but it is advisory only and never justifies a
+"nothing changed" decision on its own: a same-length rewrite with the mtime
+restored compares equal on that tuple, and a false negative in an instruction
+channel silently keeps a superseded rule in force. Measured cost of always
+digesting the real 4-file / 25 497-byte corpus: **0.21 ms** — noise beside a
+model request.
+
+## Tri-state observation
+
+Every observation is `present`, `absent` or `unavailable`, mirroring the host's
+own contract, and the two negative states are handled differently:
+
+| Observation | Meaning | Effect |
+| --- | --- | --- |
+| `present` | read successfully | content ships |
+| `absent` | `ENOENT` / `ENOTDIR` — confirmed non-existence | `remove` delta; a clearing message when nothing is left |
+| `unavailable` | anything else — `EACCES`, `EIO`, a race with atomic replacement | last-good content preserved; **no** removal, **no** clearing, cache not advanced so the next step retries |
+
+Collapsing the two would let a transient permission error permanently
+deactivate a safety rule that was never deleted. On the very *first* load there
+is no last-good value, so an unreadable file is diagnosed and skipped.
+
+## Bounds
+
+The byte cap is enforced on the **fully rendered message** — preamble, per-file
+headers and framing included — not on the sum of the bodies, because many tiny
+files would otherwise blow the prompt budget while every per-file check passed.
+Overflow drops whole files from a deterministic prefix of the sorted order and
+records a diagnostic; a body is never truncated, which also means a multibyte
+code point can never be split.
+
+## Rules entry configuration
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `rules` | `true` | Set `false` to disable the rules capability entirely. |
+| `maxRules` | `32` | Maximum rule files loaded from one directory. |
+| `maxRuleFileBytes` | `65536` | Maximum size of one rule file; a larger one is skipped with a diagnostic. |
+| `maxRenderedBytes` | `262144` | Maximum UTF-8 size of the complete rendered message. |
+| `rulesSubdir` | `.dsh/rules` | Rules directory, relative to the project root. |
+
+## Rules edge cases
+
+| Case | Behaviour |
+| --- | --- |
+| No `.dsh/rules`, or no `.git` ancestor | nothing injected, no diagnostic |
+| Empty directory | nothing injected; a previously non-empty set is cleared explicitly |
+| Non-`.md` file, subdirectory, file empty after trim | ignored silently |
+| File over `maxRuleFileBytes` | skipped with a diagnostic; the rest still load |
+| More files than `maxRules` | first N by filename win; each drop diagnosed |
+| Body containing `{{example}}` | loaded unchanged; prompt assembly still succeeds |
+| Session header with no `cwd` | falls back to `fallbackCwd`, else `process.cwd()` |
+
+***
+
+# Development
 
 ```sh
 pnpm install          # links the harness packages from ../deepseek-harness
@@ -161,12 +276,23 @@ pnpm run build        # emit lib/
 Install into a profile:
 
 ```sh
-pnpm dsh plugin --profile web add file:/abs/path/to/dsh-project-agents
+pnpm dsh plugin --profile web add file:/abs/path/to/dsh-project-context
 ```
 
-> **`file:` installs are copies, not links.** pnpm materializes the package into
-> `<profile>/node_modules` from the `files` list, so a later edit to this repo
-> does **not** reach an installed profile. Re-run the `add` (or `pnpm install` in
-> the profile) after changing `lib/`. The package's own harness imports resolve
-> through `$DSH_HOME/profiles/node_modules`, which the launcher links to the
-> source checkout.
+> **`file:` installs are hardlinks — verify, do not assume.** pnpm materializes
+> the package into `<profile>/node_modules` by hardlinking each file from the
+> `files` list, so the installed path and this repo can share one inode. Whether
+> a rebuild reaches an installed profile therefore depends on how the emitter
+> writes: `tsc` overwrites in place and the change propagates with no `add`,
+> while anything that unlinks and recreates a file (a clean `rm -rf lib`, a
+> bundler) breaks the link and leaves the profile silently stale. Neither
+> outcome announces itself. After changing `lib/`, check before trusting it:
+>
+> ```sh
+> diff -rq lib "$DSH_HOME/profiles/web/node_modules/dsh-project-context/lib"
+> ```
+>
+> Re-run the `add` (or `pnpm install` in the profile) when it reports a
+> difference. The package's own harness imports resolve through
+> `$DSH_HOME/profiles/node_modules`, which the launcher links to the source
+> checkout.

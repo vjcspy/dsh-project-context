@@ -85,7 +85,7 @@ export interface Workspace {
  * @returns the workspace handle.
  */
 export function makeWorkspace(label = 'project'): Workspace {
-  const root = mkdtempSync(join(tmpdir(), `dsh-project-agents-${label}-`))
+  const root = mkdtempSync(join(tmpdir(), `dsh-project-context-${label}-`))
   mkdirSync(join(root, '.git'), { recursive: true })
   const agentsDir = join(root, '.dsh', 'agents')
   mkdirSync(agentsDir, { recursive: true })

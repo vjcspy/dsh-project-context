@@ -51,7 +51,7 @@ for (const count of MEASURED_COUNTS) {
       .filter(block => block.type === 'text')
       .map(block => block.text)
       .join('')
-    const catalogStart = systemText.indexOf('Project-scoped subagents available')
+    const catalogStart = systemText.indexOf('Project-scoped subagents')
     expect(catalogStart).toBeGreaterThanOrEqual(0)
     // The section is a 3-line intro, a blank line, then one row per agent.
     const tail = systemText.slice(catalogStart).split('\n')

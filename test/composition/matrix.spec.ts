@@ -142,7 +142,7 @@ test('a roster that mounted nothing still explains itself in the FIRST model req
   expect(toolNames(recordedRequests[0])).toEqual([])
   const text = systemText(recordedRequests[0])
   expect(text).toContain('broken.md')
-  expect(text).not.toContain('Project-scoped subagents available')
+  expect(text).not.toContain('Project-scoped subagents')
 })
 
 test('a surfaced reason quoting `{{ }}` cannot break prompt assembly', async () => {

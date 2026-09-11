@@ -1,8 +1,10 @@
 /**
- * Project-scoped markdown subagents.
+ * Project-scoped context: markdown subagents and markdown rules.
  *
- * This plugin registers NO tool of its own. It discovers markdown agent
- * definitions under each Agent's project root and mounts one first-party
+ * Two capabilities share one project-root resolver and one diagnostics stack.
+ *
+ * **Agents.** This plugin registers NO tool of its own. It discovers markdown
+ * agent definitions under each Agent's project root and mounts one first-party
  * `@deepseek-ai/dsh-tool-subagent` instance per definition into that Agent's
  * own context scope, following the precedent at
  * `packages/subagent/subagent-dsh-sdk/tests/fixtures/loader/scoped-tool-subagent.ts`
@@ -17,11 +19,20 @@
  *   (`packages/subagent/subagent-in-process-driver/src/index.ts:134`), so a
  *   child reuses its parent's already-resolved immutable roster.
  *
- * @module dsh-project-agents
+ * **Rules.** Every `*.md` under `<projectRoot>/.dsh/rules/` is loaded verbatim
+ * and delivered as one durable, self-superseding user message, reconciled
+ * inside the `agent/pre-step` waterfall. Delivery CANNOT go through the inbox:
+ * `preStep` claims and empties the `next-step` batch before dispatching the
+ * waterfall (`packages/core/agent-loop/src/agent.ts:245,249`), so `prepend`
+ * would land on a later step and `replace` would return `false`. See
+ * `rules-reconcile.ts` for the full argument.
+ *
+ * @module dsh-project-context
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
 // Side-effect type imports: these declare the `tools`, `subagents`,
 // `systemPrompt` and `webserver/index-inject` seams this module reads.
 import type {} from '@deepseek-ai/dsh-tools'
@@ -32,9 +43,20 @@ import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
 import { capabilityRejection, renderCatalog, resolveAgents, toSubagentConfig } from './config-mapping.ts'
 import { DiagnosticSink, errorsOf, renderReport, renderWebNotice } from './diagnostics.ts'
 import { discover, resolveBounds } from './discovery.ts'
+import './message-source.ts'
+import { resolveRuleBounds, scanRules } from './rules-discovery.ts'
+import {
+  dropPendingRules,
+  emptyRulesState,
+  reconcileRules,
+  recoverStateFromHistory,
+  sameRulesPayload,
+  syncRulesInbox,
+  type RulesState,
+} from './rules-reconcile.ts'
 import type { Config, Diagnostic, ResolvedAgent, ResourceBounds, Roster } from './types.ts'
 
-export const name = 'dsh-project-agents'
+export const name = 'dsh-project-context'
 
 /**
  * Only the Agent registry is required at load. `tools` and `systemPrompt` are
@@ -43,7 +65,8 @@ export const name = 'dsh-project-agents'
  */
 export const inject = ['agents']
 
-export type { Config, ResolvedAgent, Roster } from './types.ts'
+export type { Config, Observation, ResolvedAgent, RuleObservation, RuleScan, Roster } from './types.ts'
+export type { ProjectRuleChange, ProjectRulesSource } from './message-source.ts'
 
 /** Name of the Agent-scoped catalog section. */
 export const CATALOG_SECTION = 'project-agents:catalog'
@@ -74,7 +97,10 @@ function visibleToolNames(agent: Agent): ReadonlySet<string> {
 export function apply(ctx: Context, config: Config = {}): void {
   // Fail loud at load: a nonsense cap is a deployment error, and it must be
   // rejected before any Agent can mount anything.
-  const bounds: ResourceBounds = resolveBounds(config)
+  const bounds: ResourceBounds = { ...resolveBounds(config), ...resolveRuleBounds(config) }
+  // Absence, not `?? true`: an explicit YAML `null` is a configuration mistake
+  // and must not silently read as "enabled".
+  const rulesEnabled = !Object.hasOwn(config, 'rules') || config.rules === true
 
   const installed = new Map<Agent, () => void>()
   const rosters = new WeakMap<Agent, Roster>()
@@ -113,7 +139,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       roster = rosterFor(agent)
     } catch (error: unknown) {
       // Discovery must never veto Agent publication.
-      ctx.logger.warn(`dsh-project-agents: discovery failed for agent "${agent.id}": ${String(error)}`)
+      ctx.logger.warn(`dsh-project-context: discovery failed for agent "${agent.id}": ${String(error)}`)
       return
     }
     rosters.set(agent, roster)
@@ -121,7 +147,12 @@ export function apply(ctx: Context, config: Config = {}): void {
     // that skipped every file is exactly the case a log-only report lost. A
     // later Agent for the same cwd replaces the entry, so fixing a file clears
     // the banner as soon as the next roster is resolved.
-    reports.set(roster.cwd, roster.diagnostics)
+    // Preserve any rule diagnostics already recorded for this cwd: the two
+    // capabilities publish into the same banner and must not erase each other.
+    reports.set(roster.cwd, [
+      ...(reports.get(roster.cwd) ?? []).filter(entry => entry.capability === 'rules'),
+      ...roster.diagnostics,
+    ])
     const report = renderReport(roster.diagnostics, roster.agents.length, roster.cwd)
     if (report !== undefined) ctx.logger.warn(report)
     // Nothing to mount and nothing for the operator to fix: stay out of the way.
@@ -136,7 +167,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       // the same per-Agent install transaction as the tool fibers.
       const systemPrompt = agent.ctx.get('systemPrompt')
       if (systemPrompt === undefined) {
-        ctx.logger.warn('dsh-project-agents: the systemPrompt service is unavailable; the agent catalog was not registered')
+        ctx.logger.warn('dsh-project-context: the systemPrompt service is unavailable; the agent catalog was not registered')
       } else {
         disposers.push(systemPrompt.section({
           name: CATALOG_SECTION,
@@ -156,13 +187,13 @@ export function apply(ctx: Context, config: Config = {}): void {
           // transactional rollback and must be prevented here.
           if (runtimeCtx.tools.get(resolved.toolName, agent) !== undefined) {
             ctx.logger.warn(
-              `dsh-project-agents: skipped ${resolved.path} — tool "${resolved.toolName}" already exists in this Agent's scope`,
+              `dsh-project-context: skipped ${resolved.path} — tool "${resolved.toolName}" already exists in this Agent's scope`,
             )
             return
           }
           const rejection = capabilityRejection(resolved, runtimeCtx.subagents.getProvider(resolved.transport))
           if (rejection !== undefined) {
-            ctx.logger.warn(`dsh-project-agents: skipped ${resolved.path} — ${rejection}`)
+            ctx.logger.warn(`dsh-project-context: skipped ${resolved.path} — ${rejection}`)
             return
           }
           try {
@@ -172,14 +203,14 @@ export function apply(ctx: Context, config: Config = {}): void {
             ToolSubagent.apply(runtimeCtx, toSubagentConfig(resolved), agent.session)
             mountedToolNames.add(resolved.toolName)
           } catch (error: unknown) {
-            ctx.logger.warn(`dsh-project-agents: skipped ${resolved.path} — mount failed: ${String(error)}`)
+            ctx.logger.warn(`dsh-project-context: skipped ${resolved.path} — mount failed: ${String(error)}`)
           }
         })
         disposers.push(fiber.dispose)
       }
     } catch (error: unknown) {
       for (const dispose of disposers.reverse()) void dispose()
-      ctx.logger.warn(`dsh-project-agents: install failed for agent "${agent.id}"; nothing was mounted: ${String(error)}`)
+      ctx.logger.warn(`dsh-project-context: install failed for agent "${agent.id}"; nothing was mounted: ${String(error)}`)
       return
     }
 
@@ -202,16 +233,105 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (notice !== undefined) table.push({ kind: 'script', placement: 'body', text: notice })
   })
 
+  // ── project rules ────────────────────────────────────────────────────────
+  // Delivered by folding into `decision.messages` inside the `agent/pre-step`
+  // waterfall. Nothing here touches `agent/created`: a throw there would VETO
+  // Agent publication (`packages/core/agent/src/index.ts:545-553`), and every
+  // Agent — parent and child alike, as Phase 1 GATE 1 measured — traverses
+  // pre-step on its own, so the snapshot needs no inheritance path.
+  const rulesStates = new WeakMap<Agent, RulesState>()
+
+  /**
+   * Resolve the state this Agent should reconcile against.
+   *
+   * A cold in-memory cache does NOT mean a cold session: after a resume, a
+   * fork or a plugin reload the transcript may already carry snapshots the
+   * model has read. Recovering from history is what stops a resume from
+   * re-delivering rules the model already has.
+   */
+  const rulesStateFor = (agent: Agent, claimed: readonly UserMessage[]): RulesState => {
+    const known = rulesStates.get(agent)
+    if (known !== undefined) return known
+    const recovered = recoverStateFromHistory(agent, claimed) ?? emptyRulesState()
+    rulesStates.set(agent, recovered)
+    return recovered
+  }
+
+  if (rulesEnabled) {
+    ctx.on('agent/pre-step', async (
+      { agent, messages, step, signal },
+      next,
+    ): Promise<PreStepDecision> => {
+      // Deliberately OUTSIDE any containment: a rejected `next()`, an abort or
+      // an invariant error is a real failure and must propagate. Only expected
+      // filesystem outcomes are contained, and they are contained inside the
+      // scan itself, which reports them as tri-state observations.
+      const decision = await next()
+      signal.throwIfAborted()
+
+      const sink = new DiagnosticSink()
+      const cwd = agent.session.header.cwd ?? config.fallbackCwd ?? process.cwd()
+      const scan = scanRules(cwd, config, bounds, sink)
+      const state = rulesStateFor(agent, messages)
+      const outcome = reconcileRules(scan, state, bounds, sink)
+
+      const diagnostics = sink.drain()
+      if (diagnostics.length > 0) {
+        // Republish the cwd's diagnostics so the web banner reflects the
+        // CURRENT pass: rule diagnostics change on every refresh, unlike the
+        // immutable per-Agent agent roster.
+        const existing = reports.get(cwd) ?? []
+        reports.set(cwd, [...existing.filter(entry => (entry.capability ?? 'agents') !== 'rules'), ...diagnostics])
+        const loaded = scan.files.filter(file => file.observation === 'present').length
+        const report = renderReport(diagnostics, loaded, cwd, 'rules')
+        if (report !== undefined) ctx.logger.warn(report)
+      } else if (reports.has(cwd)) {
+        // A clean pass clears this cwd's rule diagnostics, so fixing a file
+        // takes the banner down on the next step.
+        const kept = (reports.get(cwd) ?? []).filter(entry => (entry.capability ?? 'agents') !== 'rules')
+        if (kept.length === 0) reports.delete(cwd)
+        else reports.set(cwd, kept)
+      }
+
+      const desired = outcome.desired
+      // An empty first entry owns a no-step turn; keep the snapshot pending
+      // rather than turning it into a standalone request. Mirrors
+      // `packages/context/agent-instructions/src/index.ts:324-327`.
+      if (decision.kind === 'reject' || (step === 1 && decision.messages.length === 0)) {
+        syncRulesInbox(agent, messages, desired)
+        return decision
+      }
+      // A proceeding step settles the pending snapshot: it either enters below
+      // or its payload is already covered by the batch.
+      dropPendingRules(agent)
+      if (desired === undefined) return decision
+      if (decision.messages.some(message => sameRulesPayload(message, desired))) {
+        rulesStates.set(agent, outcome.next)
+        return decision
+      }
+      // Right after the claimed batch, so the direct prompt precedes the rules
+      // and the driver-appended runtime context follows them.
+      const lastClaimedIndex = decision.messages.findLastIndex(message => messages.includes(message))
+      const entered = decision.messages.toSpliced(lastClaimedIndex + 1, 0, desired)
+      // Committed only now, because only now has the model actually been shown
+      // the snapshot. An `unavailable` observation never advances the retained
+      // content for the unobserved scope, so the next step re-reads it.
+      rulesStates.set(agent, outcome.next)
+      return { ...decision, messages: entered }
+    })
+  }
+
   for (const agent of ctx.agents.list()) install(agent)
   ctx.on('agent/created', ({ agent }) => { install(agent) })
   ctx.on('agent/disposed', ({ agent }) => {
     installed.get(agent)?.()
     installed.delete(agent)
     rosters.delete(agent)
+    rulesStates.delete(agent)
   })
   ctx.effect(() => () => {
     for (const dispose of installed.values()) dispose()
     installed.clear()
     reports.clear()
-  }, 'dsh-project-agents.scopedAgents()')
+  }, 'dsh-project-context.scopedContext()')
 }

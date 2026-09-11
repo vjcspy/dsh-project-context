@@ -5,7 +5,7 @@
  * vetoes Agent publication, so a typo in one file must not be able to abort
  * Agent creation. Every failure is returned as a {@link Diagnostic}.
  *
- * @module dsh-project-agents/frontmatter
+ * @module dsh-project-context/frontmatter
  */
 
 import { load as loadYaml, YAMLException } from 'js-yaml'

@@ -6,7 +6,7 @@
  * so an async scan would miss the first prompt assembly. It MUST also be
  * bounded, because the project root is arbitrary and only known per Agent.
  *
- * @module dsh-project-agents/discovery
+ * @module dsh-project-context/discovery
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
@@ -16,8 +16,11 @@ import type { DiagnosticSink } from './diagnostics.ts'
 import { parseAgentFile } from './frontmatter.ts'
 import type { Config, DiscoveredAgentFile, Layer, ResourceBounds } from './types.ts'
 
-/** Default resource bounds; each is overridable on the plugin entry. */
-export const DEFAULT_BOUNDS: ResourceBounds = {
+/** Agent-capability slice of {@link ResourceBounds}. */
+export type AgentBounds = Pick<ResourceBounds, 'maxAgents' | 'maxFileBytes' | 'maxTotalBytes'>
+
+/** Default agent resource bounds; each is overridable on the plugin entry. */
+export const DEFAULT_BOUNDS: AgentBounds = {
   maxAgents: 16,
   maxFileBytes: 64 * 1024,
   maxTotalBytes: 256 * 1024,
@@ -40,11 +43,11 @@ const MAX_DIRECTORY_ENTRIES = 1000
  * @returns the resolved bounds.
  * @throws when any override is not a positive safe integer.
  */
-export function resolveBounds(config: Config): ResourceBounds {
+export function resolveBounds(config: Config): AgentBounds {
   const read = (value: number | undefined, key: string, fallback: number): number => {
     if (value === undefined) return fallback
     if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new Error(`dsh-project-agents: \`${key}\` must be a positive safe integer, got ${String(value)}`)
+      throw new Error(`dsh-project-context: \`${key}\` must be a positive safe integer, got ${String(value)}`)
     }
     return value
   }
@@ -98,7 +101,7 @@ interface ScanState {
 function scanLayer(
   directory: string,
   layer: Layer,
-  bounds: ResourceBounds,
+  bounds: AgentBounds,
   sink: DiagnosticSink,
   state: ScanState,
 ): DiscoveredAgentFile[] {
@@ -187,7 +190,7 @@ export interface DiscoveryResult {
 export function discover(
   cwd: string,
   config: Config,
-  bounds: ResourceBounds,
+  bounds: AgentBounds,
   sink: DiagnosticSink,
   env: NodeJS.ProcessEnv = process.env,
 ): DiscoveryResult {
