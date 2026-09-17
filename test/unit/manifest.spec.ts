@@ -11,7 +11,7 @@
  * told to provide.
  */
 
-import { readFileSync, readdirSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
@@ -25,11 +25,32 @@ const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf
   dsh?: { bundle?: { patch?: string } }
 }
 
+/**
+ * Every `.ts` file under one directory, recursively.
+ *
+ * The scan MUST recurse: the MCP half lives in `src/mcp/`, and a top-level
+ * `src/*.ts` listing would let every module below it escape the dependency
+ * invariant silently — which is exactly the failure the invariant exists to
+ * catch, since an installed copy would then import a harness package no
+ * profile was told to provide.
+ * @param dir - absolute directory to walk.
+ * @returns absolute paths of every TypeScript source below it.
+ */
+function typescriptFiles(dir: string): string[] {
+  const found: string[] = []
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry)
+    if (statSync(path).isDirectory()) found.push(...typescriptFiles(path))
+    else if (entry.endsWith('.ts')) found.push(path)
+  }
+  return found
+}
+
 /** Specifiers imported for their RUNTIME value, not erased as types. */
 function runtimeHarnessImports(): ReadonlySet<string> {
   const found = new Set<string>()
-  for (const file of readdirSync(join(packageRoot, 'src')).filter(name => name.endsWith('.ts'))) {
-    const source = readFileSync(join(packageRoot, 'src', file), 'utf8')
+  for (const file of typescriptFiles(join(packageRoot, 'src'))) {
+    const source = readFileSync(file, 'utf8')
     // `import type …` and `import type {} …` are erased by
     // `verbatimModuleSyntax`; everything else survives into `lib/`.
     const pattern = /^import\s+(?!type\b)[^\n]*?from\s+'(@deepseek-ai\/[^']+)'/gm

@@ -23,11 +23,12 @@ import type { Capability, Diagnostic, SourceLocation } from './types.ts'
 /**
  * The nouns one capability's report uses.
  *
- * The renderers are shared between the two capabilities, but the operator
- * action differs completely — a skipped agent definition means a missing tool,
- * a skipped rule file means an instruction that is not in force. Calling a
- * rule file an "agent definition" (which `renderReport` used to hardcode)
- * would send the operator to the wrong directory, so the noun is a parameter.
+ * The renderers are shared between the capabilities, but the operator action
+ * differs completely — a skipped agent definition means a missing tool, a
+ * skipped rule file means an instruction that is not in force, a skipped
+ * command file means a slash command the operator cannot type. Calling a rule
+ * file an "agent definition" (which `renderReport` used to hardcode) would send
+ * the operator to the wrong directory, so the noun is a parameter.
  */
 export interface CapabilityLabels {
   /** Singular noun for one skipped unit, e.g. `agent definition`. */
@@ -42,6 +43,7 @@ export interface CapabilityLabels {
 export const CAPABILITY_LABELS: Readonly<Record<Capability, CapabilityLabels>> = {
   agents: { unit: 'agent definition', plural: 's', retainedVerb: 'mounted' },
   rules: { unit: 'rule file', plural: 's', retainedVerb: 'loaded' },
+  commands: { unit: 'command file', plural: 's', retainedVerb: 'registered' },
 }
 
 /** Stable plugin identity used in every operator-facing string. */
@@ -63,6 +65,31 @@ export function forCapability(
   capability: Capability,
 ): readonly Diagnostic[] {
   return diagnostics.filter(diagnostic => capabilityOf(diagnostic) === capability)
+}
+
+/**
+ * Replace ONE capability's slice of a cwd's diagnostics, preserving the rest.
+ *
+ * Every capability publishes into the same per-cwd banner, so a pass must
+ * retract only its own previous findings. This was previously hand-written at
+ * each publish site and two of the three sites were hardcoded binary
+ * comparisons: the agents pass kept only `capability === 'rules'`, which
+ * silently erased the `commands` slice on every Agent creation, while the rules
+ * pass used the mirror-image `!== 'rules'` and happened to survive. Expressing
+ * the operation once, in terms of {@link capabilityOf}, is what makes the
+ * asymmetry impossible to reintroduce when a fourth capability lands.
+ *
+ * @param existing - the cwd's current diagnostics, from any capability.
+ * @param capability - the capability whose previous slice is being retracted.
+ * @param next - that capability's fresh diagnostics for this pass.
+ * @returns the merged list, with `next` replacing only its own slice.
+ */
+export function replaceCapability(
+  existing: readonly Diagnostic[],
+  capability: Capability,
+  next: readonly Diagnostic[],
+): readonly Diagnostic[] {
+  return [...existing.filter(diagnostic => capabilityOf(diagnostic) !== capability), ...next]
 }
 
 /** Rows a surfaced block may carry before it is truncated. */

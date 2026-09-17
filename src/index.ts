@@ -1,7 +1,10 @@
 /**
- * Project-scoped context: markdown subagents and markdown rules.
+ * Project-scoped context: markdown subagents, markdown rules and markdown
+ * commands.
  *
- * Two capabilities share one project-root resolver and one diagnostics stack.
+ * Three capabilities share one project-root resolver and one diagnostics stack.
+ * (A fourth concern — this deployment's MCP servers — is a separate settings
+ * namespace, not a member of the {@link Capability} union.)
  *
  * **Agents.** This plugin registers NO tool of its own. It discovers markdown
  * agent definitions under each Agent's project root and mounts one first-party
@@ -27,6 +30,14 @@
  * would land on a later step and `replace` would return `false`. See
  * `rules-reconcile.ts` for the full argument.
  *
+ * **Commands.** Every `*.md` under `<projectRoot>/.dsh/commands/` becomes one
+ * Agent-scoped DSH slash command. Registration MUST be Agent-scoped: a global
+ * `ctx.commands.register` cannot express per-project visibility, so each Agent
+ * gets its own `agent.ctx.inject(['commands'], …)` fiber. A name that collides
+ * with a first-party command is rejected rather than allowed to shadow it, and
+ * provenance for that decision is read off the registered `definitionId`. See
+ * `commands-install.ts`.
+ *
  * @module dsh-project-context
  */
 
@@ -40,9 +51,14 @@ import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
+import { resolveCommandBounds, scanCommands } from './commands-discovery.ts'
+import { installCommands, resolveCommands } from './commands-install.ts'
 import { capabilityRejection, renderCatalog, resolveAgents, toSubagentConfig } from './config-mapping.ts'
-import { DiagnosticSink, errorsOf, renderReport, renderWebNotice } from './diagnostics.ts'
+import { capabilityOf, DiagnosticSink, errorsOf, forCapability, renderReport, renderWebNotice, replaceCapability } from './diagnostics.ts'
 import { discover, resolveBounds } from './discovery.ts'
+import { createMcpManager } from './mcp/manager.ts'
+import { installMcpNamespace, MCP_NAMESPACE, MCP_NAMESPACE_BASE } from './mcp/namespace.ts'
+import type { McpManagerConfig } from './mcp/types.ts'
 import './message-source.ts'
 import { resolveRuleBounds, scanRules } from './rules-discovery.ts'
 import {
@@ -54,7 +70,7 @@ import {
   syncRulesInbox,
   type RulesState,
 } from './rules-reconcile.ts'
-import type { Config, Diagnostic, ResolvedAgent, ResourceBounds, Roster } from './types.ts'
+import type { Capability, Config, Diagnostic, ResolvedAgent, ResourceBounds, Roster } from './types.ts'
 
 export const name = 'dsh-project-context'
 
@@ -65,8 +81,23 @@ export const name = 'dsh-project-context'
  */
 export const inject = ['agents']
 
-export type { Config, Observation, ResolvedAgent, RuleObservation, RuleScan, Roster } from './types.ts'
+export type {
+  CommandBounds,
+  CommandFile,
+  CommandObservation,
+  CommandScan,
+  Config,
+  Observation,
+  ResolvedAgent,
+  ResolvedCommand,
+  RuleObservation,
+  RuleScan,
+  Roster,
+} from './types.ts'
 export type { ProjectRuleChange, ProjectRulesSource } from './message-source.ts'
+export type { McpManagerConfig, McpServerEntry, McpTransport } from './mcp/types.ts'
+export type { McpServerState, McpServerStatus } from './mcp/reconcile.ts'
+export { MCP_NAMESPACE } from './mcp/namespace.ts'
 
 /** Name of the Agent-scoped catalog section. */
 export const CATALOG_SECTION = 'project-agents:catalog'
@@ -77,7 +108,7 @@ export const CATALOG_SECTION = 'project-agents:catalog'
  * Kept as a named constant so adding a third capability cannot quietly skip
  * the banner the way the rules capability did.
  */
-const RENDERED_CAPABILITIES = ['agents', 'rules'] as const
+const RENDERED_CAPABILITIES = ['agents', 'rules', 'commands'] as const
 
 /**
  * Read the effective pre-mount tool-name universe for one Agent scope. A
@@ -105,10 +136,23 @@ function visibleToolNames(agent: Agent): ReadonlySet<string> {
 export function apply(ctx: Context, config: Config = {}): void {
   // Fail loud at load: a nonsense cap is a deployment error, and it must be
   // rejected before any Agent can mount anything.
-  const bounds: ResourceBounds = { ...resolveBounds(config), ...resolveRuleBounds(config) }
+  const bounds: ResourceBounds = {
+    ...resolveBounds(config),
+    ...resolveRuleBounds(config),
+    ...resolveCommandBounds(config),
+  }
   // Absence, not `?? true`: an explicit YAML `null` is a configuration mistake
   // and must not silently read as "enabled".
   const rulesEnabled = !Object.hasOwn(config, 'rules') || config.rules === true
+  const commandsEnabled = !Object.hasOwn(config, 'commands') || config.commands === true
+  // The composition base for the MCP namespace. Defaults stay credential-free,
+  // so a repository under version control never carries a server secret; the
+  // user layer of the namespace holds the operator's own servers. Entries
+  // written in a `cordis.yml` config block are unresolved input — the schema
+  // resolves them once the namespace is installed.
+  const entryMcpConfig: McpManagerConfig = {
+    servers: (config.mcp?.servers ?? MCP_NAMESPACE_BASE.servers) as McpManagerConfig['servers'],
+  }
 
   const installed = new Map<Agent, () => void>()
   const rosters = new WeakMap<Agent, Roster>()
@@ -137,7 +181,12 @@ export function apply(ctx: Context, config: Config = {}): void {
     const cwd = header.cwd ?? config.fallbackCwd ?? process.cwd()
     const discovered = discover(cwd, config, bounds, sink)
     const agents = resolveAgents(discovered.files, visibleToolNames(agent), sink)
-    return { agents, diagnostics: sink.drain(), projectRoot: discovered.projectRoot, cwd }
+    // Resolved in the SAME pass as the agent roster so a child Agent inherits
+    // them by reusing the parent's roster object, exactly like its agents.
+    const commands = commandsEnabled
+      ? resolveCommands(scanCommands(cwd, config, bounds, sink), sink)
+      : []
+    return { agents, commands, diagnostics: sink.drain(), projectRoot: discovered.projectRoot, cwd }
   }
 
   const install = (agent: Agent): void => {
@@ -155,16 +204,33 @@ export function apply(ctx: Context, config: Config = {}): void {
     // that skipped every file is exactly the case a log-only report lost. A
     // later Agent for the same cwd replaces the entry, so fixing a file clears
     // the banner as soon as the next roster is resolved.
-    // Preserve any rule diagnostics already recorded for this cwd: the two
-    // capabilities publish into the same banner and must not erase each other.
-    reports.set(roster.cwd, [
-      ...(reports.get(roster.cwd) ?? []).filter(entry => entry.capability === 'rules'),
-      ...roster.diagnostics,
-    ])
-    const report = renderReport(roster.diagnostics, roster.agents.length, roster.cwd)
-    if (report !== undefined) ctx.logger.warn(report)
+    //
+    // ONE SLICE PER CAPABILITY. Every capability publishes into the same
+    // banner, so a pass must replace its OWN slice and preserve the others.
+    // This filter used to be the hardcoded `entry.capability === 'rules'`,
+    // which silently erased the commands slice on every Agent creation; the
+    // rules pass had the mirror-image `!== 'rules'` and happened to survive.
+    // `capabilityOf()` is reused so the untagged-default is applied the same
+    // way everywhere.
+    const publish = (
+      capability: Capability,
+      diagnostics: readonly Diagnostic[],
+      retainedCount: number,
+    ): void => {
+      const merged = replaceCapability(reports.get(roster.cwd) ?? [], capability, diagnostics)
+      if (merged.length === 0) reports.delete(roster.cwd)
+      else reports.set(roster.cwd, merged)
+      const report = renderReport(diagnostics, retainedCount, roster.cwd, capability)
+      if (report !== undefined) ctx.logger.warn(report)
+    }
+    publish('agents', forCapability(roster.diagnostics, 'agents'), roster.agents.length)
+    publish('commands', forCapability(roster.diagnostics, 'commands'), roster.commands.length)
     // Nothing to mount and nothing for the operator to fix: stay out of the way.
-    if (roster.agents.length === 0 && errorsOf(roster.diagnostics).length === 0) return
+    if (
+      roster.agents.length === 0
+      && roster.commands.length === 0
+      && errorsOf(roster.diagnostics).length === 0
+    ) return
 
     const disposers: Array<() => unknown> = []
     // Populated by each fiber that actually registered its tool; the catalog
@@ -183,7 +249,9 @@ export function apply(ctx: Context, config: Config = {}): void {
           order: systemPrompt.getSectionOrder('TOOL_SUBAGENT') + 1,
           text: () => renderCatalog(
             roster.agents.filter(entry => mountedToolNames.has(entry.toolName)),
-            roster.diagnostics,
+            // Agents only: the catalog tells the model which DELEGATION TOOLS
+            // are missing, so a command-file rejection here would be a lie.
+            forCapability(roster.diagnostics, 'agents'),
           ),
         }))
       }
@@ -213,6 +281,45 @@ export function apply(ctx: Context, config: Config = {}): void {
           } catch (error: unknown) {
             ctx.logger.warn(`dsh-project-context: skipped ${resolved.path} — mount failed: ${String(error)}`)
           }
+        })
+        disposers.push(fiber.dispose)
+      }
+
+      // ── project commands ────────────────────────────────────────────────
+      // ONE fiber for the whole command set, not one per command: the service
+      // is injected once, and every registration it makes is an effect of this
+      // fiber, disposed with it by the same per-Agent transaction as the tools.
+      if (roster.commands.length > 0) {
+        // `inject` defers until the service exists, so a composition whose
+        // commands bundle activates later still gets its commands. If it NEVER
+        // appears the callback simply never runs — a silent no-op — so that
+        // case is reported here rather than left to be discovered by hand.
+        if (agent.ctx.get('commands') === undefined) {
+          publish('commands', [
+            ...forCapability(roster.diagnostics, 'commands'),
+            {
+              severity: 'error',
+              capability: 'commands',
+              path: roster.projectRoot ?? roster.cwd,
+              reason: `the "commands" service is not mounted in this composition; ${String(roster.commands.length)} project command file(s) were not registered`,
+            },
+          ], 0)
+        }
+        const fiber = agent.ctx.inject(['commands'], (runtimeCtx) => {
+          const outcome = installCommands({
+            agent,
+            runtimeCtx,
+            commands: roster.commands,
+            maxExpandedBytes: bounds.maxExpandedBytes,
+            log: { warn: message => ctx.logger.warn(message) },
+          })
+          // Re-publish the WHOLE commands slice: the scan-time rejections are
+          // still true, so they must not be replaced by the registration set.
+          publish(
+            'commands',
+            [...forCapability(roster.diagnostics, 'commands'), ...outcome.diagnostics],
+            outcome.registered,
+          )
         })
         disposers.push(fiber.dispose)
       }
@@ -337,13 +444,38 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   for (const agent of ctx.agents.list()) install(agent)
-  ctx.on('agent/created', ({ agent }) => { install(agent) })
+  ctx.on('agent/created', ({ agent }) => {
+    install(agent)
+    return undefined
+  })
   ctx.on('agent/disposed', ({ agent }) => {
     installed.get(agent)?.()
     installed.delete(agent)
     rosters.delete(agent)
     rulesStates.delete(agent)
   })
+
+  // ── managed MCP servers ──────────────────────────────────────────────────
+  // The namespace is the store of record; the manager diffs it against the
+  // live mounts. Both are plugin-owned, and every mount is an effect of this
+  // context, so plugin teardown disconnects every server it started.
+  let mcpSource = (): McpManagerConfig => entryMcpConfig
+  const mcpManager = createMcpManager({
+    ctx,
+    read: () => mcpSource(),
+    log: { warn: message => ctx.logger.warn(message) },
+  })
+  installMcpNamespace(ctx, entryMcpConfig, {
+    setSource: (source) => { mcpSource = source },
+    // Fires at install as well, which is what arms the first pass. The pass is
+    // deliberately not awaited: a server that takes seconds to connect must not
+    // hold up Agent publication.
+    onChange: () => { void mcpManager.reconcile() },
+  })
+  // Registered before the first pass so a fast unload still disposes anything
+  // the pass mounted; the manager ignores a reconcile that arrives after stop.
+  ctx.effect(() => () => mcpManager.dispose(), 'dsh-project-context.mcpManager()')
+
   ctx.effect(() => () => {
     for (const dispose of installed.values()) dispose()
     installed.clear()

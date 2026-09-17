@@ -71,7 +71,14 @@ export function findInterpolationHazard(text: string): number {
   return -1
 }
 
-interface Split {
+/**
+ * A markdown file split into its YAML frontmatter block and its body.
+ *
+ * Exported because `command-frontmatter.ts` needs the identical split: a
+ * command file declares its `description` in the same block, and two copies of
+ * these anchors would drift on the first edge case either parser fixes.
+ */
+export interface Split {
   readonly yaml: string
   /** Offset of the first frontmatter character inside the original text. */
   readonly yamlOffset: number
@@ -85,7 +92,7 @@ interface Split {
  * @param text - the complete file text (BOM already stripped).
  * @returns the split, or undefined when no frontmatter block delimits the file.
  */
-function splitFrontmatter(text: string): Split | undefined {
+export function splitFrontmatter(text: string): Split | undefined {
   const openMatch = /^---[ \t]*\r?\n/.exec(text)
   if (openMatch === null) return undefined
   const yamlOffset = openMatch[0].length

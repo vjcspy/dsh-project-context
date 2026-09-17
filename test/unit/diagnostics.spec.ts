@@ -1,15 +1,22 @@
 import { describe, expect, test } from 'vitest'
 import {
+  CAPABILITY_LABELS,
   DiagnosticSink,
   MAX_SURFACED_DIAGNOSTICS,
+  capabilityOf,
   errorsOf,
+  forCapability,
+  noticeDomId,
   renderLine,
   renderReport,
   renderSurfacedDiagnostics,
   renderWebNotice,
+  replaceCapability,
   sanitizeForPrompt,
 } from '../../src/diagnostics.ts'
-import type { Diagnostic } from '../../src/types.ts'
+import type { Capability, Diagnostic } from '../../src/types.ts'
+
+const CAPABILITIES: readonly Capability[] = ['agents', 'rules', 'commands']
 
 function diagnostic(over: Partial<Diagnostic> = {}): Diagnostic {
   return { severity: 'error', path: '/repo/.dsh/agents/broken.md', reason: 'invalid YAML frontmatter', ...over }
@@ -126,5 +133,65 @@ describe('web notice', () => {
     expect(script).not.toContain('</script')
     expect(script).not.toContain('<img')
     expect(script).toContain('\\u003c')
+  })
+})
+
+describe('per-capability slices', () => {
+  // One cwd's diagnostics carry all three capabilities at once, and each pass
+  // retracts only its own slice. The hand-written version of this replaced the
+  // whole list with `capability === 'rules'`, which erased the commands slice on
+  // every Agent creation.
+  const agentsEntry = diagnostic({ reason: 'missing a leading `---`' })
+  const rulesEntry = diagnostic({ capability: 'rules', path: '/repo/.dsh/rules/a.md', reason: 'body is empty' })
+  const commandsEntry = diagnostic({ capability: 'commands', path: '/repo/.dsh/commands/deploy.md', reason: 'body is empty' })
+
+  test('an untagged diagnostic belongs to agents', () => {
+    expect(capabilityOf(agentsEntry)).toBe('agents')
+    expect(capabilityOf(rulesEntry)).toBe('rules')
+    expect(capabilityOf(commandsEntry)).toBe('commands')
+  })
+
+  test('an agents re-scan retracts only the agents slice', () => {
+    const fresh = diagnostic({ capability: 'agents', reason: 're-scanned agents entry' })
+    const merged = replaceCapability([agentsEntry, rulesEntry, commandsEntry], 'agents', [fresh])
+    expect(merged).toContain(rulesEntry)
+    expect(merged).toContain(commandsEntry)
+    expect(merged).not.toContain(agentsEntry)
+    expect(forCapability(merged, 'agents')).toEqual([fresh])
+    expect(forCapability(merged, 'rules')).toEqual([rulesEntry])
+    expect(forCapability(merged, 'commands')).toEqual([commandsEntry])
+  })
+
+  test('a commands re-scan retracts only the commands slice', () => {
+    const merged = replaceCapability([agentsEntry, rulesEntry, commandsEntry], 'commands', [])
+    expect(merged).toContain(agentsEntry)
+    expect(merged).toContain(rulesEntry)
+    expect(merged).not.toContain(commandsEntry)
+    expect(forCapability(merged, 'commands')).toEqual([])
+  })
+
+  test('every capability has a distinct, non-empty label set', () => {
+    const labels = CAPABILITIES.map(capability => CAPABILITY_LABELS[capability])
+    for (const label of labels) {
+      expect(label.unit.length).toBeGreaterThan(0)
+      expect(label.plural.length).toBeGreaterThan(0)
+      expect(label.retainedVerb.length).toBeGreaterThan(0)
+      expect(label.unit).not.toContain('{{')
+    }
+    expect(new Set(labels.map(label => label.unit)).size).toBe(CAPABILITIES.length)
+    expect(new Set(labels.map(label => label.retainedVerb)).size).toBe(CAPABILITIES.length)
+  })
+
+  test('every capability paints a distinct banner', () => {
+    const ids = CAPABILITIES.map(capability => noticeDomId(capability))
+    expect(new Set(ids).size).toBe(CAPABILITIES.length)
+    expect(ids.every(id => id.length > 0)).toBe(true)
+  })
+
+  test('the report uses the commands noun rather than the agents noun', () => {
+    const report = renderReport([commandsEntry], 2, '/repo', 'commands')
+    expect(report).toContain('1 command file skipped for cwd "/repo" (2 registered)')
+    expect(report).not.toContain('agent definition')
+    expect(renderReport([rulesEntry], 1, '/repo', 'rules')).toContain('1 rule file skipped')
   })
 })

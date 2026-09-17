@@ -16,6 +16,7 @@ import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepse
 import { createUserMessage, LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import CommandRuntime from '@deepseek-ai/dsh-commands'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SpawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import * as ProjectAgents from '../../src/index.ts'
@@ -72,10 +73,15 @@ class RecordingAdapter extends LlmAdapter {
 export interface Workspace {
   readonly root: string
   readonly agentsDir: string
+  readonly commandsDir: string
   /** Write one `<name>.md` agent definition into `<root>/.dsh/agents`. */
   write(name: string, text: string): string
   /** Remove one previously written definition. */
   remove(name: string): void
+  /** Write one `<name>.md` command file into `<root>/.dsh/commands`. */
+  writeCommand(name: string, text: string): string
+  /** Remove one previously written command file. */
+  removeCommand(name: string): void
   dispose(): void
 }
 
@@ -89,9 +95,12 @@ export function makeWorkspace(label = 'project'): Workspace {
   mkdirSync(join(root, '.git'), { recursive: true })
   const agentsDir = join(root, '.dsh', 'agents')
   mkdirSync(agentsDir, { recursive: true })
+  const commandsDir = join(root, '.dsh', 'commands')
+  mkdirSync(commandsDir, { recursive: true })
   return {
     root,
     agentsDir,
+    commandsDir,
     write(name, text) {
       const path = join(agentsDir, `${name}.md`)
       writeFileSync(path, text, 'utf8')
@@ -99,6 +108,14 @@ export function makeWorkspace(label = 'project'): Workspace {
     },
     remove(name) {
       rmSync(join(agentsDir, `${name}.md`), { force: true })
+    },
+    writeCommand(name, text) {
+      const path = join(commandsDir, `${name}.md`)
+      writeFileSync(path, text, 'utf8')
+      return path
+    },
+    removeCommand(name) {
+      rmSync(join(commandsDir, `${name}.md`), { force: true })
     },
     dispose() {
       rmSync(root, { recursive: true, force: true })
@@ -149,6 +166,11 @@ export async function boot(
   await mountAgentLoopTestDependencies(ctx)
   ctx.llm.registerAdapter(['mock'], new RecordingAdapter())
   const fibers: Array<{ dispose: () => Promise<void> }> = []
+  // The `commands` service. It is a plain service plugin with no `inject` of
+  // its own, so mounting it here creates `ctx.commands` immediately and adds no
+  // further service edge: `register`/`find` are local-only calls and need
+  // neither a Typert host nor any profile machinery.
+  fibers.push(await ctx.plugin(CommandRuntime))
   fibers.push(await ctx.plugin(SubagentRuntime))
   if (options.withProvider !== false) fibers.push(await ctx.plugin(SpawnProvider, { providerName: 'spawn' }))
   let pluginFiber = options.deferPlugin === true ? undefined : await ctx.plugin(ProjectAgents, config)

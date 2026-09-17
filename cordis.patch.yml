@@ -1,15 +1,30 @@
 # dsh-project-context bundle patch: mounts the plugin on the host plane under
 # the stable id `dsh-project-context`. The plugin registers no tool of its own.
-# It provides two project-scoped capabilities:
+# It provides four capabilities:
 #
-#   - agents: discovers markdown agent definitions under each Agent's project
+#   - agents:   discovers markdown agent definitions under each Agent's project
 #     root and mounts one first-party `@deepseek-ai/dsh-tool-subagent` instance
 #     per definition into that Agent's own context scope.
-#   - rules:  loads every `*.md` under `<projectRoot>/.dsh/rules/` verbatim and
+#   - rules:    loads every `*.md` under `<projectRoot>/.dsh/rules/` verbatim and
 #     delivers it as one durable, self-superseding user message, reconciled
 #     inside the `agent/pre-step` waterfall so an edit reaches the CURRENT
 #     request.
+#   - commands: registers every `*.md` under `<projectRoot>/.dsh/commands/` as an
+#     Agent-scoped DSH slash command via `ctx.commands.register(...)`. The
+#     markdown body is the prompt template; `$ARGUMENTS` is substituted in place
+#     when present, and otherwise any text typed after the command name is
+#     appended as a trailing block. Nothing in a command file is ever executed.
+#   - mcp:      owns this deployment's MCP servers. The composition base ships an
+#     EMPTY list on purpose — a repository under version control must never
+#     carry a server credential. The operator's servers live in the
+#     `dsh-project-context-mcp` settings namespace (the user layer of
+#     `$DSH_HOME/settings.yaml`, mode 0600) and are mounted live through
+#     `@deepseek-ai/dsh-mcp-client`, so the Settings page is the single source
+#     of truth and no `mcp-*` row belongs in any patch layer.
 
 - insert:
     - id: dsh-project-context
       name: 'dsh-project-context'
+      config:
+        mcp:
+          servers: []

@@ -10,6 +10,8 @@
  * @module dsh-project-context/types
  */
 
+import type { McpManagerConfig } from './mcp/types.ts'
+
 /** The `ctx.subagents` transport an agent file delegates through. */
 export type Transport = 'spawn' | 'fork'
 
@@ -93,14 +95,17 @@ export interface ResolvedAgent {
 export type DiagnosticSeverity = 'error' | 'notice'
 
 /**
- * Which of this plugin's two capabilities a diagnostic belongs to.
+ * Which of this plugin's capabilities a diagnostic belongs to.
  *
- * The report renderers are shared, but the two capabilities fail for unrelated
+ * The report renderers are shared, but the capabilities fail for unrelated
  * reasons and produce unrelated operator actions, so a report that called a
  * skipped rule file an "agent definition" would be actively misleading. The tag
  * selects the noun; it is not presentation.
+ *
+ * The MCP settings namespace is deliberately NOT a member: it reports through
+ * its own settings surface and never publishes into this banner.
  */
-export type Capability = 'agents' | 'rules'
+export type Capability = 'agents' | 'rules' | 'commands'
 
 /** One skipped file or cap violation, aggregated into a single host-log report. */
 export interface Diagnostic {
@@ -137,6 +142,17 @@ export interface ResourceBounds {
    * value with its wrappers and metadata.
    */
   readonly maxRenderedBytes: number
+  /** Maximum number of command files registered into one Agent scope. */
+  readonly maxCommands: number
+  /** Maximum size of one `*.md` command file, in bytes. */
+  readonly maxCommandFileBytes: number
+  /**
+   * Maximum UTF-8 size of the COMPLETE expanded command body handed to
+   * `followup()` — after `$ARGUMENTS` substitution or argument appending, not
+   * of the source file. The source cap ({@link maxCommandFileBytes}) is a
+   * separate, independent limit.
+   */
+  readonly maxExpandedBytes: number
 }
 
 /**
@@ -202,6 +218,78 @@ export interface RuleScan {
   readonly projectRoot: string | undefined
 }
 
+/**
+ * One command file after frontmatter validation.
+ *
+ * The name is derived from the FILENAME, never from frontmatter: DSH command
+ * names are what the operator types after `/`, and a file whose declared name
+ * disagreed with its path would make the `/` menu and the filesystem disagree.
+ */
+export interface CommandFile {
+  /** Command name, taken from the filename with `.md` stripped. */
+  readonly name: string
+  /** Validated `description`; one line, rendered in the `/` menu. */
+  readonly description: string
+  /** The `argument-hint` value, or the generic default when absent. */
+  readonly hint: string
+  /** The verbatim markdown body, used as the prompt template. */
+  readonly body: string
+}
+
+/** One command file as observed by a single scan. */
+export interface CommandObservation {
+  /** Stable identity: the filename inside `.dsh/commands`. */
+  readonly scope: string
+  /** Absolute path. */
+  readonly path: string
+  /** Whether this scan could determine the file's state. */
+  readonly observation: Observation
+  /** The verbatim body. Present only when `observation` is `present`. */
+  readonly body?: string
+  /** SHA-256 of {@link body}. Present only when `observation` is `present`. */
+  readonly digest?: string
+  /** Advisory identity; never used to skip a read. */
+  readonly stamp?: MetadataStamp
+}
+
+/** The result of one bounded, synchronous commands scan. */
+export interface CommandScan {
+  /** The absolute `.dsh/commands` path, or the path it would have had. */
+  readonly directory: string | undefined
+  /** Whether the directory listing itself could be determined. */
+  readonly directoryObservation: Observation
+  /**
+   * Every `*.md` entry the listing produced, sorted by filename, after the
+   * `maxCommands` cap. Entries whose own state could not be determined appear
+   * here with `observation: 'unavailable'`.
+   */
+  readonly files: readonly CommandObservation[]
+  /** The resolved project root, or undefined when no `.git` ancestor exists. */
+  readonly projectRoot: string | undefined
+}
+
+/** One command resolved for registration, with its provenance and digest. */
+export interface ResolvedCommand {
+  /** Command name, taken from the filename with `.md` stripped. */
+  readonly name: string
+  /** Absolute path of the declaring file, used by every diagnostic. */
+  readonly path: string
+  /** Validated `description`; one line, rendered in the `/` menu. */
+  readonly description: string
+  /** The `argument-hint` value, or the generic default when absent. */
+  readonly hint: string
+  /** The verbatim markdown body, used as the prompt template. */
+  readonly body: string
+  /** SHA-256 of {@link body}, as observed by the scan that produced it. */
+  readonly digest: string
+}
+
+/** Command-capability slice of {@link ResourceBounds}. */
+export type CommandBounds = Pick<
+  ResourceBounds,
+  'maxCommands' | 'maxCommandFileBytes' | 'maxExpandedBytes'
+>
+
 /** Plugin entry configuration. */
 export interface Config {
   /** Override {@link ResourceBounds.maxAgents}; default 16. */
@@ -234,11 +322,39 @@ export interface Config {
    * global layer.
    */
   readonly rulesSubdir?: string
+  /** Turn the project-commands capability off entirely; default `true` (on). */
+  readonly commands?: boolean
+  /** Override {@link ResourceBounds.maxCommands}; default 32. */
+  readonly maxCommands?: number
+  /** Override {@link ResourceBounds.maxCommandFileBytes}; default 65536. */
+  readonly maxCommandFileBytes?: number
+  /** Override {@link ResourceBounds.maxExpandedBytes}; default 262144. */
+  readonly maxExpandedBytes?: number
+  /**
+   * Directory holding project command files, relative to the project root.
+   * Defaults to `.dsh/commands`. Exposed for tests; there is deliberately no
+   * global layer.
+   */
+  readonly commandsSubdir?: string
+  /**
+   * Per-server MCP configuration seeded into this plugin's settings namespace
+   * as its composition base. Defaults to `{ servers: [] }`: defaults in this
+   * repository must stay credential-free, and the four migrated servers live
+   * in the user layer of the namespace instead.
+   */
+  readonly mcp?: McpManagerConfig
 }
 
 /** Immutable roster resolved for one top-level Agent lineage. */
 export interface Roster {
   readonly agents: readonly ResolvedAgent[]
+  /**
+   * The commands resolved for the same lineage. A child Agent reuses its
+   * parent's whole roster, so it re-registers the PARENT's resolved command set
+   * under its own scope rather than rescanning its own cwd — matching the
+   * agents capability.
+   */
+  readonly commands: readonly ResolvedCommand[]
   readonly diagnostics: readonly Diagnostic[]
   /** The project root the scan resolved, or undefined when none was found. */
   readonly projectRoot: string | undefined
