@@ -44,6 +44,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { PostToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 // Side-effect type imports: these declare the `tools`, `subagents`,
 // `systemPrompt` and `webserver/index-inject` seams this module reads.
 import type {} from '@deepseek-ai/dsh-tools'
@@ -56,6 +57,9 @@ import { installCommands, resolveCommands } from './commands-install.ts'
 import { capabilityRejection, renderCatalog, resolveAgents, toSubagentConfig } from './config-mapping.ts'
 import { capabilityOf, DiagnosticSink, errorsOf, forCapability, renderReport, renderWebNotice, replaceCapability } from './diagnostics.ts'
 import { discover, resolveBounds } from './discovery.ts'
+import { CircuitBreaker, lookupLinkedDocuments } from './linked-documents/backend.ts'
+import { absoluteReadPath, AweaveRootResolver, readPathOf, toResourcesRelPath } from './linked-documents/filter.ts'
+import { linkedDocumentsMessage, ReadPathSkips, renderLinkedDocuments } from './linked-documents/payload.ts'
 import { createMcpManager } from './mcp/manager.ts'
 import { installMcpNamespace, MCP_NAMESPACE, MCP_NAMESPACE_BASE } from './mcp/namespace.ts'
 import type { McpManagerConfig } from './mcp/types.ts'
@@ -454,6 +458,102 @@ export function apply(ctx: Context, config: Config = {}): void {
     rosters.delete(agent)
     rulesStates.delete(agent)
   })
+
+  // ── linked documents ─────────────────────────────────────────────────────
+  // A DSH agent `read` of a `resources/**/*.md(c)` file inside the Aweave root
+  // is enriched with the compact linked-documents block the Claude/Cursor hook
+  // injects, carried to the next step inbox through `additionalContexts`
+  // (`packages/core/agent-loop/src/agent.ts:489-492`).
+  //
+  // The listener is registered with a plain `ctx.on`: a waterfall listener needs
+  // no service injection (both reference plugins prove it), and adding `tools` to
+  // `inject` would hold this plugin's whole mount hostage to one service name.
+  //
+  // Fail-open is the contract, not a nicety. Every branch below — agent-less
+  // call, non-`read` tool, non-`resources/` path, non-Aweave root, no server,
+  // missing CLI, unparsable payload — resolves to accept with no contexts. A
+  // throw out of a post-execute listener would turn the successful `read` into an
+  // `isError` result, which is the opposite of what silence means here.
+  const aweaveRoots = new AweaveRootResolver()
+  const breaker = new CircuitBreaker()
+  const skips = new ReadPathSkips()
+
+  /**
+   * Resolve the block to inject for one settled read, or undefined.
+   * @param exec - the settled tool call.
+   * @returns the injected message, or undefined when this read stays silent.
+   */
+  const linkedDocumentsFor = async (exec: ToolExecution): Promise<UserMessage | undefined> => {
+    const filePath = readPathOf(exec)
+    if (filePath === undefined) return undefined
+    // `SessionHeader.cwd` is optional, so the process cwd is the documented
+    // fallback rather than a defensive one.
+    const header = exec.agent?.session.header
+    const cwd = header?.cwd ?? process.cwd()
+    const projectRoot = aweaveRoots.resolve(cwd)
+    if (projectRoot === undefined) return undefined
+    const absolute = absoluteReadPath(filePath, cwd)
+    if (absolute === undefined) return undefined
+    const relPath = toResourcesRelPath(absolute, projectRoot)
+    if (relPath === undefined) return undefined
+
+    const sessionKey = header?.id
+    if (sessionKey === undefined) return undefined
+    if (skips.has(sessionKey, relPath)) return undefined
+    if (breaker.isOpen(sessionKey)) return undefined
+
+    const result = await lookupLinkedDocuments({
+      aweaveRoot: projectRoot,
+      relPath,
+      sessionKey,
+      signal: exec.signal,
+    })
+    // The breaker counts only transport failures. An empty answer from a live
+    // backend is a fact about the graph, not a symptom, so it clears the run
+    // instead of advancing it — otherwise three reads of unlinked documents
+    // would silently disable injection for the rest of the session.
+    if (result.transportFailed) breaker.recordFailure(sessionKey)
+    else breaker.recordSuccess(sessionKey)
+    skips.record(sessionKey, relPath, result.omitted)
+    const block = renderLinkedDocuments(result)
+    return block === undefined ? undefined : linkedDocumentsMessage(block)
+  }
+
+  ctx.on('tools/post-execute', async (exec, _result, next): Promise<PostToolDecision> => {
+    // First branch, before any other work: a direct `ctx.tools.execute()` caller
+    // has no agent, and reading `exec.agent.session` would throw out of the
+    // waterfall. `readPathOf` re-checks it because that is where the contract is
+    // documented.
+    if (!exec.agent) return next()
+    let context: UserMessage | undefined
+    try {
+      context = await linkedDocumentsFor(exec)
+    } catch (error: unknown) {
+      // Containment here is deliberate and total: this plugin must never convert
+      // a successful read into a failed one.
+      ctx.logger.warn(`dsh-project-context: linked-documents lookup failed: ${String(error)}`)
+      context = undefined
+    }
+    // Observe-and-enrich, never veto: delegate first so a later listener can
+    // still block or replace, then fold the block onto whatever came back —
+    // `additionalContexts` rides both decision variants.
+    const downstream = await next()
+    if (context === undefined) return downstream
+    if (downstream.kind === 'block') {
+      return {
+        kind: 'block',
+        feedback: downstream.feedback,
+        additionalContexts: [...downstream.additionalContexts ?? [], context],
+      }
+    }
+    return { ...downstream, additionalContexts: [...downstream.additionalContexts ?? [], context] }
+  })
+
+  ctx.effect(() => () => {
+    aweaveRoots.clear()
+    breaker.clear()
+    skips.clear()
+  }, 'dsh-project-context.linkedDocuments()')
 
   // ── managed MCP servers ──────────────────────────────────────────────────
   // The namespace is the store of record; the manager diffs it against the
