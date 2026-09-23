@@ -14,6 +14,9 @@
  *   I declared missing?" on every surface, including surfaces with no UI.
  * - {@link renderWebNotice} — a body script row for `webserver/index-inject`,
  *   which paints a dismissible banner in the web GUI.
+ * - {@link renderMcpHealthScript} — the second body script row, which polls the
+ *   plugin-owned MCP health route so an outage appears and clears without a
+ *   page refresh.
  *
  * @module dsh-project-context/diagnostics
  */
@@ -288,6 +291,95 @@ export function renderWebNotice(
     + "background:transparent;color:inherit;padding:2px 8px';"
     + " close.addEventListener('click', () => { box.remove() }); box.appendChild(close);"
     + ' document.body.appendChild(box);'
+    + ' } catch {}'
+    + '})();'
+}
+
+/** Pathname of the plugin-owned read-only MCP health route. */
+export const MCP_HEALTH_ROUTE = '/dsh-project-context/mcp-health'
+
+/** DOM id of the MCP outage banner. Distinct from every capability banner. */
+export const MCP_HEALTH_DOM_ID = `${PLUGIN_LABEL}-mcp-notice`
+
+/** How often the injected banner re-reads the health route, in milliseconds. */
+export const MCP_HEALTH_POLL_MS = 15_000
+
+/**
+ * Build the `webserver/index-inject` body script that keeps the MCP outage
+ * banner live without a page refresh.
+ *
+ * A poller is used rather than server-pushed HTML because the index injection
+ * table is collected only when the index is RENDERED, so an html row would be
+ * frozen at page load and could never show an outage that starts later, nor
+ * clear one that ends.
+ *
+ * Two guards, for two different failure modes:
+ * - a `window` sentinel, because the script is re-injected on every index
+ *   render and `getElementById` cannot dedupe it — the element legitimately
+ *   does not exist while the servers are healthy, so an element-based guard
+ *   would stack one timer per render;
+ * - a dismissal key (the sorted names of the currently down servers), so a
+ *   Dismiss survives polling but a CHANGE in the outage set re-shows the
+ *   banner instead of suppressing a new outage.
+ *
+ * The payload is never interpolated as markup: every value is written with
+ * `textContent` and the whole body is wrapped in `try {} catch {}`, so a DOM or
+ * CSP failure cannot break the page.
+ * @returns the script source for one `webserver/index-inject` body row.
+ */
+export function renderMcpHealthScript(): string {
+  const route = MCP_HEALTH_ROUTE.replaceAll('<', '\\u003c')
+  const domId = MCP_HEALTH_DOM_ID.replaceAll('<', '\\u003c')
+  const label = `${PLUGIN_LABEL}: `.replaceAll('<', '\\u003c')
+  return ';(() => {'
+    + ' try {'
+    + " const key = '__dshProjectContextMcpHealth';"
+    + ' if (window[key]) return; window[key] = true;'
+    + ` const route = ${JSON.stringify(route)};`
+    + ` const id = ${JSON.stringify(domId)};`
+    + ` const label = ${JSON.stringify(label)};`
+    + ' let dismissed = null;'
+    + ' const paint = (rows) => {'
+    + '  const box = document.getElementById(id);'
+    + '  const names = rows.map((row) => String(row.serverName)).sort();'
+    + '  const current = names.join("\\u0000");'
+    + '  if (!rows.length || dismissed === current) { if (box) box.remove(); return; }'
+    + '  const target = box || document.createElement("div");'
+    + '  target.id = id; target.setAttribute("role", "alert");'
+    + "  target.style.cssText = 'position:fixed;z-index:2147483647;left:12px;right:12px;bottom:12px;"
+    + 'max-width:720px;margin:0 auto;padding:10px 12px;border:1px solid #b45309;border-radius:8px;'
+    + "background:#fffbeb;color:#78350f;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;"
+    + "box-shadow:0 6px 20px rgba(0,0,0,.18)';"
+    + '  while (target.firstChild) target.removeChild(target.firstChild);'
+    + '  const title = document.createElement("div");'
+    + '  title.textContent = label + (rows.length === 1 ? "1 MCP server is not connected" : rows.length + " MCP servers are not connected");'
+    + '  title.style.cssText = "font-weight:600;margin-bottom:4px";'
+    + '  target.appendChild(title);'
+    + '  const list = document.createElement("ul");'
+    + '  list.style.cssText = "margin:0;padding-left:18px";'
+    + '  for (const row of rows) {'
+    + '   const item = document.createElement("li");'
+    + '   item.textContent = String(row.serverName) + " \\u2014 " + (row.detail ? String(row.detail) : "reconnect attempted, still down");'
+    + '   list.appendChild(item);'
+    + '  }'
+    + '  target.appendChild(list);'
+    + '  const close = document.createElement("button");'
+    + '  close.type = "button"; close.textContent = "Dismiss";'
+    + "  close.style.cssText = 'margin-top:6px;cursor:pointer;border:1px solid #b45309;border-radius:6px;"
+    + "background:transparent;color:inherit;padding:2px 8px';"
+    + '  close.addEventListener("click", () => { dismissed = current; target.remove() });'
+    + '  target.appendChild(close);'
+    + '  if (!box && document.body) document.body.appendChild(target);'
+    + ' };'
+    + ' const read = () => {'
+    + '  fetch(route, { headers: { accept: "application/json" }, cache: "no-store" })'
+    + '   .then((response) => response.ok ? response.json() : undefined)'
+    + '   .then((body) => { if (body && Array.isArray(body.servers)) paint(body.servers) })'
+    + '   .catch(() => {});'
+    + ' };'
+    + ' const boot = () => { read(); setInterval(read, ' + String(MCP_HEALTH_POLL_MS) + ') };'
+    + ' if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);'
+    + ' else boot();'
     + ' } catch {}'
     + '})();'
 }

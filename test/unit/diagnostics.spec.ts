@@ -3,11 +3,15 @@ import {
   CAPABILITY_LABELS,
   DiagnosticSink,
   MAX_SURFACED_DIAGNOSTICS,
+  MCP_HEALTH_DOM_ID,
+  MCP_HEALTH_POLL_MS,
+  MCP_HEALTH_ROUTE,
   capabilityOf,
   errorsOf,
   forCapability,
   noticeDomId,
   renderLine,
+  renderMcpHealthScript,
   renderReport,
   renderSurfacedDiagnostics,
   renderWebNotice,
@@ -193,5 +197,53 @@ describe('per-capability slices', () => {
     expect(report).toContain('1 command file skipped for cwd "/repo" (2 registered)')
     expect(report).not.toContain('agent definition')
     expect(renderReport([rulesEntry], 1, '/repo', 'rules')).toContain('1 rule file skipped')
+  })
+})
+
+describe('MCP health banner script', () => {
+  test('it carries the route, the DOM id and the poll interval', () => {
+    const script = renderMcpHealthScript()
+    expect(script).toContain(MCP_HEALTH_ROUTE)
+    expect(script).toContain(MCP_HEALTH_DOM_ID)
+    expect(script).toContain(String(MCP_HEALTH_POLL_MS))
+    expect(script).toContain('"role", "alert"')
+    expect(script).toContain('Dismiss')
+  })
+
+  test('it is idempotent across index renders through a window sentinel, not getElementById', () => {
+    // An element-based guard cannot dedupe this script: the element legitimately
+    // does not exist while every server is healthy, so a re-render would stack a
+    // second timer on every page load.
+    const script = renderMcpHealthScript()
+    expect(script).toContain('window[key]')
+    expect(script).not.toContain('getElementById(id)) return')
+    expect(script).toContain('setInterval')
+  })
+
+  test('every DOM write goes through textContent, never innerHTML', () => {
+    const script = renderMcpHealthScript()
+    expect(script).not.toContain('innerHTML')
+    expect(script).toContain('textContent')
+  })
+
+  test('the whole body is contained, so a DOM or CSP failure cannot break the page', () => {
+    const script = renderMcpHealthScript()
+    expect(script.startsWith(';(() => {')).toBe(true)
+    expect(script.endsWith('})();')).toBe(true)
+    expect(script).toContain('} catch {}')
+    expect(script).toContain('.catch(() => {})')
+  })
+
+  test('the embedded payload cannot close the script element', () => {
+    const script = renderMcpHealthScript()
+    expect(script).not.toContain('</script')
+    expect(script).not.toContain('<')
+  })
+
+  test('a Dismiss is remembered until the set of down servers changes', () => {
+    const script = renderMcpHealthScript()
+    expect(script).toContain('dismissed = current')
+    // The key is the sorted server names, so a NEW outage re-shows the banner.
+    expect(script).toContain('.sort()')
   })
 })

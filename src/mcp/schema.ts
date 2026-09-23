@@ -235,6 +235,18 @@ export function resolveMcpServer(entry: McpServerEntryResolved): McpClientConfig
     // Zero means "keep the MCP client's own default", so the field is omitted
     // rather than sent as an explicit zero, which its schema would refuse.
     ...entry.maxInstructionBytes > 0 ? { maxInstructionBytes: entry.maxInstructionBytes } : {},
+    // The client's own budget is 10 attempts / ~151.5 s and then a TERMINAL
+    // give-up state that unregisters the server's tools; only disposing the
+    // mount brings it back. A server whose endpoint is not up yet when the host
+    // boots would therefore stay dead forever, so the budget is made
+    // effectively unbounded (the client schema is `z.number().step(1).min(1)
+    // .max(Number.MAX_SAFE_INTEGER)`, which `Infinity` fails; the delays stay at
+    // the client defaults, 500 ms → 30 s).
+    //
+    // This is NOT the plugin's retry mechanism — the 60 s health loop is the
+    // backstop that clears an already-latched generation. This policy only
+    // stops NEW latches from forming between two ticks.
+    reconnect: { maxAttempts: Number.MAX_SAFE_INTEGER },
   }
   if (entry.transport === 'stdio') {
     return { ...shared, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, cwd: entry.cwd }

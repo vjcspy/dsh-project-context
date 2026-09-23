@@ -7,6 +7,8 @@ import {
   toSubagentConfig,
 } from '../../src/config-mapping.ts'
 import { DiagnosticSink } from '../../src/diagnostics.ts'
+import { resolveMcpServer } from '../../src/mcp/schema.ts'
+import type { McpServerEntry } from '../../src/mcp/types.ts'
 import type { AgentFileFields, DiscoveredAgentFile, ResolvedAgent } from '../../src/types.ts'
 
 function fields(over: Partial<AgentFileFields> = {}): AgentFileFields {
@@ -168,5 +170,54 @@ describe('catalog', () => {
   test('a notice alone produces no section', () => {
     const notices = [{ severity: 'notice', path: '/x.md', reason: 'shadowed' }] as const
     expect(renderCatalog([], notices)).toBe('')
+  })
+})
+
+describe('MCP client config mapping', () => {
+  /** One fully resolved entry, as the namespace schema produces it. */
+  function mcpEntry(over: Partial<McpServerEntry> = {}): McpServerEntry {
+    return {
+      id: 'monolith',
+      serverName: 'Monolith',
+      enabled: true,
+      transport: 'streamable-http',
+      command: '',
+      args: [],
+      env: {},
+      headers: {},
+      cwd: '',
+      url: 'http://localhost:3845/mcp',
+      toolCallTimeoutMs: 60_000,
+      maxInstructionBytes: 0,
+      ...over,
+    }
+  }
+
+  test('the reconnect policy is forwarded and effectively unbounded', () => {
+    // Without it the client runs its own capped budget (10 attempts / ~151.5 s)
+    // and then latches a TERMINAL give-up state that unregisters the server's
+    // tools; only disposing the mount brings it back. `Infinity` is not a valid
+    // value for the client's schema, so the bound is `Number.MAX_SAFE_INTEGER`.
+    const config = resolveMcpServer(mcpEntry())
+    expect(config.reconnect).toEqual({ maxAttempts: Number.MAX_SAFE_INTEGER })
+  })
+
+  test('a stdio entry forwards the same policy', () => {
+    const config = resolveMcpServer(mcpEntry({
+      transport: 'stdio',
+      command: 'node',
+      args: ['server.js'],
+      url: '',
+    }))
+    expect(config.reconnect).toEqual({ maxAttempts: Number.MAX_SAFE_INTEGER })
+  })
+
+  test('maxInstructionBytes is still omitted when zero and forwarded when set', () => {
+    expect('maxInstructionBytes' in resolveMcpServer(mcpEntry())).toBe(false)
+    expect(resolveMcpServer(mcpEntry({ maxInstructionBytes: 4096 })).maxInstructionBytes).toBe(4096)
+  })
+
+  test('the forwarded policy does not disturb the soft-startup contract', () => {
+    expect(resolveMcpServer(mcpEntry()).failOnStartupError).toBe(false)
   })
 })

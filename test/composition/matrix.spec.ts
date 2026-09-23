@@ -9,6 +9,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import * as SpawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
+import { MCP_HEALTH_DOM_ID } from '../../src/diagnostics.ts'
 import { boot, definition, makeWorkspace, recordedRequests, setScript } from './harness.ts'
 import type { Booted, Workspace } from './harness.ts'
 
@@ -31,6 +32,20 @@ const NO_GLOBAL = { globalAgentsDir: '/nonexistent-global-agents' }
 
 function toolNames(request: GenerateOptions | undefined): string[] {
   return (request?.tools ?? []).map(tool => tool.name)
+}
+
+/**
+ * The capability-notice rows only.
+ *
+ * The MCP outage row is UNCONDITIONAL — it carries no diagnostics, because its
+ * script polls the health route and decides for itself whether to paint — so
+ * these assertions filter it out and keep asserting what they always did: which
+ * capability banners a given pass produced.
+ * @param table - the raw injection table.
+ * @returns every row that is not the MCP health poller.
+ */
+function noticeRows(table: IndexInjection[]): IndexInjection[] {
+  return table.filter(row => !(row.kind === 'script' && row.text.includes(MCP_HEALTH_DOM_ID)))
 }
 
 function systemText(request: GenerateOptions | undefined): string {
@@ -171,8 +186,9 @@ test('the web notice row names the skipped file for the operator', async () => {
   const table: IndexInjection[] = []
   booted.ctx.emit('webserver/index-inject', table)
 
-  expect(table).toHaveLength(1)
-  const row = table[0]
+  const notices = noticeRows(table)
+  expect(notices).toHaveLength(1)
+  const row = notices[0]
   expect(row?.kind).toBe('script')
   const text = row?.kind === 'script' ? row.text : ''
   expect(text).toContain('broken.md')
@@ -188,7 +204,10 @@ test('a clean project injects no web notice at all', async () => {
 
   const table: IndexInjection[] = []
   booted.ctx.emit('webserver/index-inject', table)
-  expect(table).toEqual([])
+  expect(noticeRows(table)).toEqual([])
+  // The MCP health row is still there: it is unconditional by design.
+  expect(table).toHaveLength(1)
+  expect(table[0]?.kind === 'script' ? table[0].text.includes(MCP_HEALTH_DOM_ID) : false).toBe(true)
 })
 
 test('a safe body with an unsafe `{{ }}` description is rejected without breaking assembly', async () => {

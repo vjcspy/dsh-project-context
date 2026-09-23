@@ -55,11 +55,12 @@ import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
 import { resolveCommandBounds, scanCommands } from './commands-discovery.ts'
 import { installCommands, resolveCommands } from './commands-install.ts'
 import { capabilityRejection, renderCatalog, resolveAgents, toSubagentConfig } from './config-mapping.ts'
-import { capabilityOf, DiagnosticSink, errorsOf, forCapability, renderReport, renderWebNotice, replaceCapability } from './diagnostics.ts'
+import { capabilityOf, DiagnosticSink, errorsOf, forCapability, MCP_HEALTH_ROUTE, renderMcpHealthScript, renderReport, renderWebNotice, replaceCapability } from './diagnostics.ts'
 import { discover, resolveBounds } from './discovery.ts'
 import { CircuitBreaker, lookupLinkedDocuments } from './linked-documents/backend.ts'
 import { absoluteReadPath, AweaveRootResolver, readPathOf, toResourcesRelPath } from './linked-documents/filter.ts'
 import { linkedDocumentsMessage, ReadPathSkips, renderLinkedDocuments } from './linked-documents/payload.ts'
+import { createHealthLoop, healthPayload, MCP_HEALTH_INTERVAL_MS } from './mcp/health.ts'
 import { createMcpManager } from './mcp/manager.ts'
 import { installMcpNamespace, MCP_NAMESPACE, MCP_NAMESPACE_BASE } from './mcp/namespace.ts'
 import type { McpManagerConfig } from './mcp/types.ts'
@@ -105,6 +106,15 @@ export { MCP_NAMESPACE } from './mcp/namespace.ts'
 
 /** Name of the Agent-scoped catalog section. */
 export const CATALOG_SECTION = 'project-agents:catalog'
+
+/**
+ * Delay before the health loop's first tick, in milliseconds.
+ *
+ * Long enough for the mount pass armed by the namespace install to finish its
+ * own settle window, so the first tick observes real per-server states instead
+ * of the empty `statuses` a zero-delay tick would see.
+ */
+const MCP_HEALTH_FIRST_TICK_MS = 1_000
 
 /**
  * Capabilities that get their own web-notice banner, in render order.
@@ -357,6 +367,12 @@ export function apply(ctx: Context, config: Config = {}): void {
       const notice = renderWebNotice(groups, capability)
       if (notice !== undefined) table.push({ kind: 'script', placement: 'body', text: notice })
     }
+    // The MCP outage banner. Unlike the capability banners it is unconditional
+    // and carries no diagnostics: its script polls the plugin-owned health route
+    // so an outage that starts (or ends) AFTER this render still appears and
+    // clears without a page refresh. The script's own `window` sentinel keeps
+    // repeated index renders from stacking timers.
+    table.push({ kind: 'script', placement: 'body', text: renderMcpHealthScript() })
   })
 
   // ── project rules ────────────────────────────────────────────────────────
@@ -575,6 +591,105 @@ export function apply(ctx: Context, config: Config = {}): void {
   // Registered before the first pass so a fast unload still disposes anything
   // the pass mounted; the manager ignores a reconcile that arrives after stop.
   ctx.effect(() => () => mcpManager.dispose(), 'dsh-project-context.mcpManager()')
+
+  // ── MCP health loop ──────────────────────────────────────────────────────
+  // `statuses()` is a CACHE: it is assigned only at the end of a pass, and a
+  // pass runs only on a settings commit. A server that connected once and dies
+  // later therefore keeps reporting `mounted` forever. This loop is the only
+  // periodic caller: it re-derives liveness from the LIVE tool registry, tries
+  // to reconnect whatever is down, and only then tells the operator — once per
+  // outage, cleared on recovery.
+  const health = createHealthLoop({
+    intervalMs: MCP_HEALTH_INTERVAL_MS,
+    snapshot: exhausted => mcpManager.healthSnapshot(exhausted),
+    retry: servers => mcpManager.retryUnhealthy(servers),
+    exhausted: () => mcpManager.exhaustedServerNames(),
+    // ONE state machine, TWO sinks. The logger line fires on every host — web
+    // and headless alike — with no "is there a webserver?" branch here.
+    notify: (notice) => {
+      ctx.logger.warn(
+        `dsh-project-context: MCP server "${notice.serverName}" is not connected — reconnect attempted (${notice.reasonCode})`,
+      )
+    },
+    log: {
+      info: message => ctx.logger.info(message),
+      warn: message => ctx.logger.warn(message),
+    },
+  })
+
+  ctx.effect(() => {
+    health.start()
+    return () => health.stop()
+  }, 'dsh-project-context.mcpHealth()')
+
+  /**
+   * One tick, fully contained.
+   *
+   * The tick body is wrapped rather than the interval callback: an unhandled
+   * rejection out of a timer would be a process-level error, and this loop must
+   * never be able to break Agent publication or the Web server. The loop itself
+   * also contains its own failures; this is the second, outermost belt.
+   * @param waitMs - delay before ticking, in milliseconds.
+   * @returns nothing; the tick's result is published through the notice registry.
+   */
+  const tickHealth = async (waitMs = 0): Promise<void> => {
+    try {
+      if (waitMs > 0) await new Promise(resolve => {
+        const timer = setTimeout(resolve, waitMs) as unknown as { unref?: () => void }
+        timer.unref?.()
+      })
+      await health.tick()
+    } catch (error: unknown) {
+      ctx.logger.warn(`dsh-project-context: the MCP health tick escaped: ${String(error)}`)
+    }
+  }
+  // One immediate tick, one second in. The first mount pass is armed by the
+  // namespace install and its own settle window runs ~150 ms, so a tick at zero
+  // would observe an empty `statuses` and publish nothing until the next
+  // interval — leaving the route and the banner blank for a full minute after
+  // every boot and every plugin reload. Nothing awaits either tick, and a tick
+  // whose predecessor is still running is skipped inside the loop.
+  void tickHealth(MCP_HEALTH_FIRST_TICK_MS)
+
+  // The route that feeds the injected banner. An optional service inject, not a
+  // required one: `dsh-host-webserver` is an optional peer, and a headless
+  // profile must keep loading with the logger as its only sink. This is a
+  // deliberate move from the plugin's previous EVENT-only, type-only coupling to
+  // that package (the `webserver/index-inject` listener) to an optional service
+  // consumer.
+  ctx.inject(['webServer'], (webCtx) => {
+    webCtx.effect(() => {
+      try {
+        const dispose = webCtx.webServer.register({
+          kind: 'exact',
+          path: MCP_HEALTH_ROUTE,
+          handler: (_req, res) => {
+            try {
+              res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+              res.end(JSON.stringify(healthPayload(health.notices())))
+            } catch (error: unknown) {
+              // The handler owns the whole response lifecycle, so a throw here
+              // would leave the request hanging rather than failing loudly.
+              webCtx.logger.warn(`dsh-project-context: the MCP health route failed: ${String(error)}`)
+              try {
+                res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+                res.end('dsh-project-context: mcp health unavailable')
+              } catch {}
+            }
+          },
+        })
+        return () => dispose()
+      } catch (error: unknown) {
+        // `register` throws on a duplicate (kind, path), which a plugin reload
+        // or an HMR re-mount can produce. Soft-fail: the route is an optional
+        // convenience, and losing it must not fail the plugin load.
+        webCtx.logger.warn(
+          `dsh-project-context: registering the MCP health route failed (another registration may already own it): ${String(error)}`,
+        )
+        return () => {}
+      }
+    }, 'dsh-project-context.mcpHealthRoute()')
+  })
 
   ctx.effect(() => () => {
     for (const dispose of installed.values()) dispose()
