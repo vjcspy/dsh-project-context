@@ -72,9 +72,6 @@ importers:
       '@deepseek-ai/dsh-jobs-local':
         specifier: link:../deepseek-harness/packages/jobs/jobs-local
         version: link:../deepseek-harness/packages/jobs/jobs-local
-      '@deepseek-ai/dsh-launch-environment':
-        specifier: link:../deepseek-harness/packages/util/launch-environment
-        version: link:../deepseek-harness/packages/util/launch-environment
       '@deepseek-ai/dsh-llm':
         specifier: link:../deepseek-harness/packages/llm/llm
         version: link:../deepseek-harness/packages/llm/llm

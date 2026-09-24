@@ -10,8 +10,10 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
+// Type-only: the service merge and the credential-ref type. The package is a
+// type dependency only — its runtime is not in the host's module-fallback tree,
+// so a value import here would fail the plugin's own import.
+import type {} from '@deepseek-ai/dsh-credentials'
 import { ownsMcpToolNamespace, reconcile, type McpServerStatus } from './reconcile.ts'
 import { createMcpRuntime, type McpClientModule, type McpRuntime, type McpServerConfig } from './runtime.ts'
 import type { McpManagerConfig, McpServerEntry } from './types.ts'
@@ -444,11 +446,16 @@ export function createMcpManager(context: McpManagerContext): McpManager {
  * @throws {Error} when a reference resolves to no value.
  */
 async function resolveEntrySecrets(ctx: Context, entry: McpServerEntry): Promise<McpServerEntry> {
-  const credentials = ctx.get('credentials')
+  // Structural, because the credentials package is a type-only dependency here.
+  const credentials = ctx.get('credentials') as {
+    resolve(ref: string): Promise<{ value?: string } | undefined>
+  } | undefined
   const resolve = async (ref: string): Promise<string> => {
+    // The credentials seam is the store; the process environment is the
+    // documented fallback when no credentials provider is mounted.
     const value = credentials !== undefined
-      ? (await credentials.resolve(credentialRef(ref)))?.value
-      : launchEnvironmentOf(ctx).get(ref)?.value
+      ? (await credentials.resolve(ref))?.value
+      : process.env[ref]
     if (value === undefined || value.length === 0) {
       throw new Error(`credential "${ref}" is not set`)
     }

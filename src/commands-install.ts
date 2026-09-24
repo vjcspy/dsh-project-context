@@ -24,8 +24,10 @@
  * @module dsh-project-context/commands-install
  */
 
-import { CommandDefinitionId } from '@deepseek-ai/dsh-commands'
-import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
+// Type-only: `@deepseek-ai/dsh-commands` is not in the host's module-fallback
+// tree, so a value import here would fail the plugin's own import. The brand
+// constructor is a runtime no-op, so the identity is applied by cast instead.
+import type { CommandDefinition, CommandDefinitionId } from '@deepseek-ai/dsh-commands'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -164,7 +166,7 @@ export function toCommandDefinition(
   log: { warn(message: string): void },
 ): CommandDefinition {
   return {
-    definitionId: CommandDefinitionId(commandDefinitionId(resolved.name)),
+    definitionId: commandDefinitionId(resolved.name) as CommandDefinitionId,
     name: resolved.name,
     description: resolved.description,
     // `rawInput` reaches the handler whether or not a hint is declared, so the
