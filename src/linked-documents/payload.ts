@@ -32,8 +32,7 @@ const ELLIPSIS = '…'
 
 /** Plugin provenance stamped on every injected block. */
 const PLUGIN_SOURCE = {
-  kind: 'plugin',
-  plugin: 'dsh-project-context',
+  kind: 'linked-documents',
   form: 'notice',
 } as const
 

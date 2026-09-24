@@ -10,9 +10,11 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { ownsMcpToolNamespace, reconcile, type McpServerStatus } from './reconcile.ts'
 import { createMcpRuntime, type McpClientModule, type McpRuntime, type McpServerConfig } from './runtime.ts'
-import type { McpManagerConfig } from './types.ts'
+import type { McpManagerConfig, McpServerEntry } from './types.ts'
 
 /** How many times one pass re-reads the tool registry while mounts settle. */
 const TOOL_SETTLE_PASSES = 3
@@ -220,9 +222,27 @@ export function createMcpManager(context: McpManagerContext): McpManager {
   }
 
   const pass = async (): Promise<void> => {
-    const config = context.read()
+    const stored = context.read()
+    const entries: McpServerEntry[] = []
+    for (const entry of stored.servers) {
+      if (!entry.enabled) {
+        entries.push(entry)
+        continue
+      }
+      try {
+        entries.push(await resolveEntrySecrets(context.ctx, entry))
+        // A credential that resolves now clears an earlier credential refusal;
+        // a mount refusal from another cause is left for the mount path to reset.
+        if (mountFailures.get(entry.serverName)?.startsWith('credential ')) mountFailures.delete(entry.serverName)
+      } catch (error: unknown) {
+        mountFailures.set(entry.serverName, error instanceof Error ? error.message : String(error))
+        // Kept in the document so the card renders the `failed` state; reconcile
+        // short-circuits on the recorded failure and never mounts it.
+        entries.push(entry)
+      }
+    }
     const plan = reconcile({
-      entries: config.servers,
+      entries,
       mounted,
       toolNames: toolNames(),
       failures: failures(),
@@ -251,7 +271,7 @@ export function createMcpManager(context: McpManagerContext): McpManager {
 
     await settle(mountedNow)
     statuses = reconcile({
-      entries: config.servers,
+      entries,
       mounted,
       toolNames: toolNames(),
       failures: failures(),
@@ -405,6 +425,43 @@ export function createMcpManager(context: McpManagerContext): McpManager {
       statuses = []
       await runtime.dispose()
     },
+  }
+}
+
+/**
+ * Replace every credential reference in one entry with its resolved value.
+ *
+ * `env` and `headers` values name credentials, never secrets: the settings
+ * document persists into the profile Cordis patch, a tracked file in this
+ * deployment, so a value must never be written there. The credentials seam is
+ * preferred; the launch environment is the documented fallback when no
+ * credentials provider is mounted. A reference that resolves to nothing makes
+ * the mount fail with a host-local reason instead of sending an empty header.
+ *
+ * @param ctx - the owning context, for the credentials seam and launch environment.
+ * @param entry - one document entry, with references in `env`/`headers`.
+ * @returns the same entry with literal values in `env`/`headers`.
+ * @throws {Error} when a reference resolves to no value.
+ */
+async function resolveEntrySecrets(ctx: Context, entry: McpServerEntry): Promise<McpServerEntry> {
+  const credentials = ctx.get('credentials')
+  const resolve = async (ref: string): Promise<string> => {
+    const value = credentials !== undefined
+      ? (await credentials.resolve(credentialRef(ref)))?.value
+      : launchEnvironmentOf(ctx).get(ref)?.value
+    if (value === undefined || value.length === 0) {
+      throw new Error(`credential "${ref}" is not set`)
+    }
+    return value
+  }
+  const resolveMap = async (map: Readonly<Record<string, string>>): Promise<Record<string, string>> =>
+    Object.fromEntries(await Promise.all(
+      Object.entries(map).map(async ([key, ref]) => [key, await resolve(ref)] as const),
+    ))
+  return {
+    ...entry,
+    env: await resolveMap(entry.env),
+    headers: await resolveMap(entry.headers),
   }
 }
 

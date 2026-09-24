@@ -67,5 +67,22 @@ export interface ProjectRulesSource {
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'project-rules': ProjectRulesSource
+    'linked-documents': LinkedDocumentsSource
   }
+}
+
+/**
+ * Source of one linked-documents enrichment message.
+ *
+ * rc.1 removed the shared catch-all `plugin` kind from `MessageSourceMap`
+ * (`packages/llm/llm/src/message.ts`), so each producer declares its own. The
+ * block is a plain notice with no supersession: a repeated read is deduplicated
+ * by the per-session skip set, not by replacing an earlier message.
+ */
+export interface LinkedDocumentsSource {
+  readonly kind: 'linked-documents'
+  /** A runtime enrichment shown without expanding the row (`notice` context form). */
+  readonly form: 'notice'
+  /** One-line account of the block. */
+  readonly summary: string
 }

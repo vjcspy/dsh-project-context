@@ -65,10 +65,10 @@ interface CardFace {
   }
 }
 
-/** A minimal stand-in for a settings-scope mirror holding one namespace view. */
+/** A minimal stand-in for a configuration-form mirror holding one namespace view. */
 function mirrorOf(value: unknown, revision = 7): EventTarget & { getSnapshot: () => unknown } {
   const target = new EventTarget() as EventTarget & { getSnapshot: () => unknown }
-  target.getSnapshot = () => ({ status: 'ready', view: { namespaces: [{ ns: 'dsh-project-context-mcp', revision, value }] } })
+  target.getSnapshot = () => ({ status: 'ready', view: { namespaces: [{ ns: 'dsh-project-context', revision, value }] } })
   return target
 }
 
@@ -87,7 +87,7 @@ function cardFace(value: unknown): CardFace {
   let captured: { inject: () => CardFace } | undefined
   const ctx = {
     locale: { getSnapshot: () => ({ active: 'en' }) },
-    settingsScope: { describe: () => mirrorOf(value) },
+    configForms: { describe: () => mirrorOf(value), get: () => ({ mutate: () => Promise.resolve() }) },
     slots: {
       inject(_name: string, contribute: () => unknown) { contribute() },
       register(registration: { inject: () => CardFace }) { captured = registration },
@@ -108,8 +108,8 @@ describe('client bundle', () => {
     expect(id).toBe('dsh-project-context')
     const exports = factory()
     expect(typeof exports['apply']).toBe('function')
-    expect(exports['inject']).toEqual(['slots', 'settingsScope', 'locale'])
-    expect(exports['MCP_NAMESPACE']).toBe('dsh-project-context-mcp')
+    expect(exports['inject']).toEqual(['slots', 'configForms', 'locale'])
+    expect(exports['MCP_NAMESPACE']).toBe('dsh-project-context')
     expect(typeof exports['McpServersSection']).toBe('function')
   })
 
@@ -141,15 +141,15 @@ describe('card snapshot stability', () => {
     const exports = factory()
     const view = (document: unknown, revision: number): unknown => ({
       status: 'ready',
-      view: { namespaces: [{ ns: 'dsh-project-context-mcp', revision, value: document }] },
+      view: { namespaces: [{ ns: 'dsh-project-context', revision, value: document }] },
     })
     let snapshot: unknown = view(value, 1)
     let captured: { inject: () => { read: () => unknown } } | undefined
     const ctx = {
       locale: { getSnapshot: () => ({ active: 'en' }) },
-      settingsScope: {
+      configForms: {
         describe: () => ({ getSnapshot: () => snapshot, subscribe: () => () => {} }),
-        bind: () => ({ mutate: () => Promise.resolve() }),
+        get: () => ({ mutate: () => Promise.resolve() }),
       },
       slots: {
         inject(_name: string, contribute: () => unknown) { contribute() },
@@ -166,7 +166,7 @@ describe('card snapshot stability', () => {
   }
 
   test('the injected face keeps one identity and read() is referentially stable', () => {
-    const card = stableCard({ servers: [] })
+    const card = stableCard({ mcp: { servers: [] } })
     const first = card.face()
     // A fresh face per `inject()` call would hand the shell a new `subscribe`
     // identity, which tears down and re-adds the subscription on every render.
@@ -175,7 +175,7 @@ describe('card snapshot stability', () => {
     // React compares `getSnapshot()` results with `Object.is`; an uncached
     // projection re-renders forever and dies on error #185.
     expect(first.read()).toBe(before)
-    card.change({ servers: [{ serverName: 'Monolith', transport: 'streamable-http' }] })
+    card.change({ mcp: { servers: [{ serverName: 'Monolith', transport: 'streamable-http' }] } })
     const after = first.read()
     expect(after).not.toBe(before)
     expect(first.read()).toBe(after)
@@ -202,12 +202,12 @@ describe('card writes', () => {
     let captured: { inject: () => unknown } | undefined
     const ctx = {
       locale: { getSnapshot: () => ({ active: 'en' }) },
-      settingsScope: {
+      configForms: {
         describe: () => ({
-          getSnapshot: () => ({ status: 'ready', view: { namespaces: [{ ns: 'dsh-project-context-mcp', revision, value }] } }),
+          getSnapshot: () => ({ status: 'ready', view: { namespaces: [{ ns: 'dsh-project-context', revision, value }] } }),
           subscribe: () => () => {},
         }),
-        bind: () => ({
+        get: () => ({
           mutate: (incoming: { path: readonly string[]; value: unknown }[], expected: number | undefined) => {
             ops.push(...incoming)
             revisions.push(expected)
@@ -231,10 +231,10 @@ describe('card writes', () => {
   }
 
   test('a new entry appends, because the editor addresses it with -1', async () => {
-    const card = writingCard({ servers: [] })
+    const card = writingCard({ mcp: { servers: [] } })
     await card.put(-1, { serverName: 'monolith-managed', transport: 'streamable-http' })
     expect(card.ops()).toHaveLength(1)
-    expect(card.ops()[0]?.path).toEqual(['servers'])
+    expect(card.ops()[0]?.path).toEqual(['mcp', 'servers'])
     // Assigning index -1 onto the array would attach a non-index property and
     // serialise as `[]`, which is silent data loss rather than a rejection.
     expect(card.ops()[0]?.value).toEqual([{ serverName: 'monolith-managed', transport: 'streamable-http' }])
@@ -242,7 +242,7 @@ describe('card writes', () => {
   })
 
   test('an existing entry is replaced in place', async () => {
-    const card = writingCard({ servers: [{ serverName: 'alpha' }, { serverName: 'beta' }] })
+    const card = writingCard({ mcp: { servers: [{ serverName: 'alpha' }, { serverName: 'beta' }] } })
     await card.put(1, { serverName: 'beta-2' })
     const written = card.ops()[0]?.value as { serverName?: string }[]
     // The mirror projects every entry through the card's own shape, so the
@@ -371,13 +371,14 @@ describe('card copy and staging', () => {
   })
 })
 
-describe('card view over a redacted wire', () => {
+describe('card view over the configuration form', () => {
   test('the card receives env and header NAMES and never their values', () => {
-    // The value the settings wire actually carries for both secret positions:
-    // the walker strips each one and leaves the key set behind. A value is
-    // planted here as well, so a projection that read values would fail.
+    // The value the settings form carries for both positions: env/header values
+    // are CREDENTIAL REFERENCES, and a value is planted here as well, so a
+    // projection that read values would fail.
     const face = cardFace({
-      servers: [
+      mcp: {
+        servers: [
         {
           id: 'github',
           serverName: 'mcp-github',
@@ -406,7 +407,8 @@ describe('card view over a redacted wire', () => {
           toolCallTimeoutMs: 60_000,
           maxInstructionBytes: 0,
         },
-      ],
+        ],
+      },
     })
 
     const snapshot = face.read()

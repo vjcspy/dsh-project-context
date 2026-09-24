@@ -2,7 +2,7 @@
  * MCP servers Settings section, browser half.
  *
  * The card is contributed to `settings.section`, so the shell renders it as
- * its own Settings page. Reads ride `ctx.settingsScope.describe()`, the one
+ * its own Settings page. Reads ride `ctx.configForms.describe()`, the one
  * shared describe mirror; writes go through `mutate` with an explicit path and
  * the revision that was read. `replace` is deliberately never used: a document
  * rebuilt from a redacted wire view would silently delete every env and header
@@ -12,7 +12,7 @@
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-// Type-only: the `settings.section` slot declaration and the settings-scope
+// Type-only: the `settings.section` slot declaration and the `configForms`
 // Context merge. Cross-plugin collaboration goes through cordis services; a
 // value import of another plugin's package is a bundle-purity error.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -28,11 +28,11 @@ import { bind, en, zh } from './locales.ts'
 export type { McpSectionSnapshot, McpServerSection, McpServersSectionInjected } from './McpServersSection.ts'
 export { McpServersSection } from './McpServersSection.ts'
 
-/** Settings namespace the host half registers. Spelled identically in both halves. */
-export const MCP_NAMESPACE = 'dsh-project-context-mcp'
+/** Settings namespace this plugin owns: its own profile entry id. Spelled identically in both halves. */
+export const MCP_NAMESPACE = 'dsh-project-context'
 
-/** Services this half reads. `slots` and `settingsScope` are shell-provided. */
-export const inject = ['slots', 'settingsScope', 'locale']
+/** Services this half reads. `slots` and `configForms` are shell-provided. */
+export const inject = ['slots', 'configForms', 'locale']
 
 /**
  * One namespace view as the mirror holds it.
@@ -78,7 +78,8 @@ interface WireSection {
  * @param ctx - the browser-side plugin context.
  */
 export function apply(ctx: ClientContext): void {
-  const mirror = ctx.settingsScope.describe()
+  const mirror = ctx.configForms.describe()
+  const form = ctx.configForms.get(MCP_NAMESPACE)
   const copy = bind(ctx.locale.getSnapshot().active === 'zh' ? zh : en)
   // `useSyncExternalStore` compares `getSnapshot()` results with `Object.is` on
   // every render AND after every subscription check, so an uncached projection
@@ -106,7 +107,7 @@ export function apply(ctx: ClientContext): void {
     // Hoisted out of the face literal for the same reason: one bound method,
     // one identity, for the lifetime of the plugin instance.
     subscribe: listener => mirror.subscribe(listener),
-    put: (index, value) => {
+    put: async (index, value) => {
       const snapshot = read()
       const payload = { ...value } as unknown as McpServerSection
       // Position, not identity: one `set` on the whole list is the only write
@@ -117,13 +118,11 @@ export function apply(ctx: ClientContext): void {
       const next = index < 0
         ? [...snapshot.servers, payload]
         : snapshot.servers.map((server, at) => at === index ? payload : server)
-      return ctx.settingsScope.bind({ namespace: MCP_NAMESPACE })
-        .mutate([{ op: 'set', path: ['servers'], value: next as never }], snapshot.revision)
+      await form.mutate([{ op: 'set', path: ['mcp', 'servers'], value: next as never }], snapshot.revision)
     },
-    drop: (index) => {
+    drop: async (index) => {
       const snapshot = read()
-      return ctx.settingsScope.bind({ namespace: MCP_NAMESPACE })
-        .mutate([{ op: 'set', path: ['servers'], value: snapshot.servers.filter((_, at) => at !== index) as never }], snapshot.revision)
+      await form.mutate([{ op: 'set', path: ['mcp', 'servers'], value: snapshot.servers.filter((_, at) => at !== index) as never }], snapshot.revision)
     },
     copy,
   }
@@ -152,8 +151,8 @@ function toSnapshot(mirrored: MirrorSnapshot, copy: ReturnType<typeof bind>): Mc
   if (mirrored.status === 'loading' || view === undefined) {
     return { served: false, writable: false, revision: undefined, servers: [], statuses: [] }
   }
-  const servers = Array.isArray((view.value as { servers?: unknown } | null)?.servers)
-    ? ((view.value as { servers: unknown[] }).servers).map(toSection)
+  const servers = Array.isArray((view.value as { mcp?: { servers?: unknown } } | null)?.mcp?.servers)
+    ? ((view.value as { mcp: { servers: unknown[] } }).mcp.servers).map(toSection)
     : []
   return {
     served: true,

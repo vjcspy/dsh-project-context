@@ -14,13 +14,17 @@
 #     markdown body is the prompt template; `$ARGUMENTS` is substituted in place
 #     when present, and otherwise any text typed after the command name is
 #     appended as a trailing block. Nothing in a command file is ever executed.
-#   - mcp:      owns this deployment's MCP servers. The composition base ships an
-#     EMPTY list on purpose — a repository under version control must never
-#     carry a server credential. The operator's servers live in the
-#     `dsh-project-context-mcp` settings namespace (the user layer of
-#     `$DSH_HOME/settings.yaml`, mode 0600) and are mounted live through
-#     `@deepseek-ai/dsh-mcp-client`, so the Settings page is the single source
-#     of truth and no `mcp-*` row belongs in any patch layer.
+#   - mcp:      owns this deployment's MCP servers. They live in THIS plugin's
+#     own configuration form (`mcp.servers`), which rc.1 projects from the
+#     volatile field into the Settings page and persists through the active
+#     profile's Cordis patch. The composition base ships an EMPTY list on
+#     purpose — a repository under version control must never carry a server
+#     credential. Each entry's `env`/`headers` VALUES are CREDENTIAL
+#     REFERENCES, never secrets: the value is stored in DSH's credential store
+#     and resolved just before the server is spawned, so the profile patch (a
+#     tracked file here) stays free of credentials. Servers are mounted live
+#     through `@deepseek-ai/dsh-mcp-client`, so the Settings page is the single
+#     source of truth and no `mcp-*` row belongs in any patch layer.
 
 - insert:
     - id: dsh-project-context

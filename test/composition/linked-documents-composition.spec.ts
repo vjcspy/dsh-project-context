@@ -153,10 +153,11 @@ describe('linked-documents listener on the production loop', () => {
 
     // Both halves coexist in the second request: the tool result the model asked
     // for, AND the injected block. A listener that hijacked the decision would
-    // have shown one without the other.
+    // have shown one without the other. rc.1 carries the result as a `tool`-role
+    // message rather than a `tool-result` content block.
     expect(recordedRequests).toHaveLength(2)
-    const blocks = (recordedRequests[1]?.messages ?? []).flatMap(message => message.content)
-    expect(blocks.filter(block => block.type === 'tool-result')).toHaveLength(1)
+    const messages = recordedRequests[1]?.messages ?? []
+    expect(messages.filter(message => message.role === 'tool')).toHaveLength(1)
     expect(linkedBlocks(recordedRequests[1])).toHaveLength(1)
   })
 

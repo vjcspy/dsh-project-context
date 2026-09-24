@@ -186,7 +186,7 @@ describe('payload rendering', () => {
   test('tags the injected message with this plugin as its source', () => {
     const message = linkedDocumentsMessage('Linked documents (1):\n- a')
     expect(message.role).toBe('user')
-    expect(message.source).toMatchObject({ kind: 'plugin', plugin: 'dsh-project-context', form: 'notice' })
+    expect(message.source).toMatchObject({ kind: 'linked-documents', form: 'notice' })
   })
 })
 

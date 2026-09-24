@@ -63,28 +63,29 @@ const entrySchema = z.object({
   command: z.string().max(MAX_COMMAND_LENGTH).default(''),
   args: z.array(z.string().max(MAX_ARG_LENGTH)).max(MAX_ARGS).default([]),
   /**
-   * Every environment value is a potential credential — a `stdio` server
-   * commonly takes its token or API key through `env`, exactly as a
-   * `streamable-http` server does through `headers` — so the whole collection
-   * is a secret position on the same terms as `headers`: stripped from every
-   * wire document and enumerated in `secrets[]` as one path per configured
-   * entry. The dict NODE is walked either way, so this costs nothing in walker
-   * coverage and needs no schema reshaping.
+   * Every value is a CREDENTIAL REFERENCE, not a secret: the operator stores
+   * the value in DSH's credential store (or the launch environment) under this
+   * name, and the mount path resolves it just before spawning. Keeping only the
+   * name in the form is what lets the settings document — which persists into
+   * the profile Cordis patch, a tracked file in this deployment — stay free of
+   * credentials.
    */
-  env: z.dict(z.string().max(MAX_ENV_VALUE_LENGTH).role('secret')).max(MAX_ENV_ENTRIES).default({}),
+  env: z.dict(z.string().max(MAX_ENV_VALUE_LENGTH).role('credential-ref')).max(MAX_ENV_ENTRIES).default({}),
   /**
-   * Every header value is a potential credential — the legacy Context7 row
-   * carried its API key as a plaintext `CONTEXT7_API_KEY` header — so the
-   * whole collection is a secret position: it is stripped from every wire
-   * document and enumerated in `secrets[]` as one path per configured entry.
+   * Every value is a CREDENTIAL REFERENCE, on the same terms as `env`. A
+   * `streamable-http` server that authenticates with a header names the
+   * credential here instead of carrying the value.
    */
-  headers: z.dict(z.string().max(MAX_HEADER_VALUE_LENGTH).role('secret')).max(MAX_HEADERS).default({}),
+  headers: z.dict(z.string().max(MAX_HEADER_VALUE_LENGTH).role('credential-ref')).max(MAX_HEADERS).default({}),
   cwd: z.string().max(MAX_CWD_LENGTH).default(''),
   url: z.string().max(MAX_URL_LENGTH).default(''),
   toolCallTimeoutMs: z.number().default(60_000),
   /** Zero means "use the MCP client's own default". */
   maxInstructionBytes: z.number().default(0),
 })
+
+/** The `servers` list schema, exported so the plugin Config can make it volatile. */
+export const mcpServersSchema = z.array(entrySchema).max(MAX_SERVERS).default([])
 
 /**
  * The MCP server namespace schema.
@@ -95,7 +96,7 @@ const entrySchema = z.object({
  * service's `T`, and every field is present after a real resolution.
  */
 export const McpManagerConfig = z.object({
-  servers: z.array(entrySchema).max(MAX_SERVERS).default([]),
+  servers: mcpServersSchema,
 }) as unknown as z<McpManagerConfigInput, McpManagerConfigResolved>
 
 /** Parser-facing namespace document: every defaulted field may be omitted. */

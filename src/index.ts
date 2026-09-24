@@ -62,10 +62,13 @@ import { absoluteReadPath, AweaveRootResolver, readPathOf, toResourcesRelPath } 
 import { linkedDocumentsMessage, ReadPathSkips, renderLinkedDocuments } from './linked-documents/payload.ts'
 import { createHealthLoop, healthPayload, MCP_HEALTH_INTERVAL_MS } from './mcp/health.ts'
 import { createMcpManager } from './mcp/manager.ts'
-import { installMcpNamespace, MCP_NAMESPACE, MCP_NAMESPACE_BASE } from './mcp/namespace.ts'
-import type { McpManagerConfig } from './mcp/types.ts'
+import { validateManagerConfig } from './mcp/schema.ts'
+import { MCP_NAMESPACE } from './mcp/types.ts'
+import type { McpServerEntry } from './mcp/types.ts'
 import './message-source.ts'
 import { resolveRuleBounds, scanRules } from './rules-discovery.ts'
+import type { Config } from './schema.ts'
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import {
   dropPendingRules,
   emptyRulesState,
@@ -75,7 +78,7 @@ import {
   syncRulesInbox,
   type RulesState,
 } from './rules-reconcile.ts'
-import type { Capability, Config, Diagnostic, ResolvedAgent, ResourceBounds, Roster } from './types.ts'
+import type { Capability, Diagnostic, ResolvedAgent, ResourceBounds, Roster } from './types.ts'
 
 export const name = 'dsh-project-context'
 
@@ -91,7 +94,6 @@ export type {
   CommandFile,
   CommandObservation,
   CommandScan,
-  Config,
   Observation,
   ResolvedAgent,
   ResolvedCommand,
@@ -102,7 +104,8 @@ export type {
 export type { ProjectRuleChange, ProjectRulesSource } from './message-source.ts'
 export type { McpManagerConfig, McpServerEntry, McpTransport } from './mcp/types.ts'
 export type { McpServerState, McpServerStatus } from './mcp/reconcile.ts'
-export { MCP_NAMESPACE } from './mcp/namespace.ts'
+export { MCP_NAMESPACE } from './mcp/types.ts'
+export { Config } from './schema.ts'
 
 /** Name of the Agent-scoped catalog section. */
 export const CATALOG_SECTION = 'project-agents:catalog'
@@ -159,14 +162,18 @@ export function apply(ctx: Context, config: Config = {}): void {
   // and must not silently read as "enabled".
   const rulesEnabled = !Object.hasOwn(config, 'rules') || config.rules === true
   const commandsEnabled = !Object.hasOwn(config, 'commands') || config.commands === true
-  // The composition base for the MCP namespace. Defaults stay credential-free,
-  // so a repository under version control never carries a server secret; the
-  // user layer of the namespace holds the operator's own servers. Entries
-  // written in a `cordis.yml` config block are unresolved input — the schema
-  // resolves them once the namespace is installed.
-  const entryMcpConfig: McpManagerConfig = {
-    servers: (config.mcp?.servers ?? MCP_NAMESPACE_BASE.servers) as McpManagerConfig['servers'],
-  }
+  // Validate the managed servers before a settings write persists. The schema
+  // covers shape and bounds; this hook adds the per-transport requirements it
+  // cannot express. It also runs at load, so a bad profile entry fails loud
+  // instead of at first mount. `this === ctx.fiber` scopes it to our entry.
+  ctx.on('internal/config', function (_raw, next) {
+    const value = next()
+    if (this === ctx.fiber) {
+      const servers = (value as { mcp?: { servers?: { get(): readonly McpServerEntry[] } } }).mcp?.servers?.get() ?? []
+      validateManagerConfig({ servers })
+    }
+    return value
+  })
 
   const installed = new Map<Agent, () => void>()
   const rosters = new WeakMap<Agent, Roster>()
@@ -572,25 +579,25 @@ export function apply(ctx: Context, config: Config = {}): void {
   }, 'dsh-project-context.linkedDocuments()')
 
   // ── managed MCP servers ──────────────────────────────────────────────────
-  // The namespace is the store of record; the manager diffs it against the
-  // live mounts. Both are plugin-owned, and every mount is an effect of this
-  // context, so plugin teardown disconnects every server it started.
-  let mcpSource = (): McpManagerConfig => entryMcpConfig
+  // `config.mcp.servers` is the store of record — a volatile reference the
+  // settings form edits and the Loader commits into — and the manager diffs it
+  // against the live mounts. Every mount is an effect of this context, so
+  // plugin teardown disconnects every server it started.
   const mcpManager = createMcpManager({
     ctx,
-    read: () => mcpSource(),
+    read: () => ({ servers: config.mcp?.servers.get() ?? [] }),
     log: { warn: message => ctx.logger.warn(message) },
   })
-  installMcpNamespace(ctx, entryMcpConfig, {
-    setSource: (source) => { mcpSource = source },
-    // Fires at install as well, which is what arms the first pass. The pass is
-    // deliberately not awaited: a server that takes seconds to connect must not
-    // hold up Agent publication.
-    onChange: () => { void mcpManager.reconcile() },
-  })
+  // The Loader commits a settings write into the reference and emits this event
+  // instead of remounting the plugin, so it is the one signal that arms a pass.
+  // The pass is deliberately not awaited: a server that takes seconds to connect
+  // must not hold up Agent publication.
+  ctx.on('loader/volatile-update', () => { void mcpManager.reconcile() })
   // Registered before the first pass so a fast unload still disposes anything
   // the pass mounted; the manager ignores a reconcile that arrives after stop.
   ctx.effect(() => () => mcpManager.dispose(), 'dsh-project-context.mcpManager()')
+  // Arm the first pass, the role `installSection`'s initial `onChange` played.
+  void mcpManager.reconcile()
 
   // ── MCP health loop ──────────────────────────────────────────────────────
   // `statuses()` is a CACHE: it is assigned only at the end of a pass, and a

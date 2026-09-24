@@ -10,7 +10,8 @@
  * @module dsh-project-context/types
  */
 
-import type { McpManagerConfig } from './mcp/types.ts'
+import type { Volatile } from '@deepseek-ai/cordis'
+import type { McpServerEntry } from './mcp/types.ts'
 
 /** The `ctx.subagents` transport an agent file delegates through. */
 export type Transport = 'spawn' | 'fork'
@@ -337,12 +338,13 @@ export interface Config {
    */
   readonly commandsSubdir?: string
   /**
-   * Per-server MCP configuration seeded into this plugin's settings namespace
-   * as its composition base. Defaults to `{ servers: [] }`: defaults in this
-   * repository must stay credential-free, and the four migrated servers live
-   * in the user layer of the namespace instead.
+   * Managed MCP servers, as the Loader resolves them. `servers` is a VOLATILE
+   * reference: the settings form edits `mcp.servers` and the Loader commits the
+   * new list into this reference without remounting the plugin. Defaults to an
+   * empty list; the operator's servers live in the profile patch, and every
+   * `env`/`headers` value is a credential reference rather than a secret.
    */
-  readonly mcp?: McpManagerConfig
+  readonly mcp?: { readonly servers: Volatile<readonly McpServerEntry[]> }
 }
 
 /** Immutable roster resolved for one top-level Agent lineage. */

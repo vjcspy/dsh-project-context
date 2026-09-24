@@ -58,8 +58,14 @@ export interface McpManagerConfig {
   readonly servers: readonly McpServerEntry[]
 }
 
-/** The settings namespace this plugin owns. */
-export const MCP_NAMESPACE = 'dsh-project-context-mcp'
+/**
+ * The settings namespace this plugin owns.
+ *
+ * rc.1 keys configuration forms by profile entry id, so the managed servers live
+ * in this plugin's OWN entry form (`mcp.servers`) instead of a separate
+ * namespace. The id matches the bundle patch row (`cordis.patch.yml`).
+ */
+export const MCP_NAMESPACE = 'dsh-project-context'
 
 /** The composition-layer value the plugin entry supplies as the namespace base. */
 export const MCP_NAMESPACE_BASE: McpManagerConfig = { servers: [] }
