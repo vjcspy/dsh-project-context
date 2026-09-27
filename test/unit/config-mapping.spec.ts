@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   capabilityRejection,
+  delegationCapNotice,
   renderCatalog,
   resolveAgents,
   toolNameFor,
@@ -170,6 +171,86 @@ describe('catalog', () => {
   test('a notice alone produces no section', () => {
     const notices = [{ severity: 'notice', path: '/x.md', reason: 'shadowed' }] as const
     expect(renderCatalog([], notices)).toBe('')
+  })
+
+  /** The declaration paragraph, pinned verbatim for depth 3 against a cap of 3. */
+  const DEPTH_3_CAP_3 = [
+    'The project-scoped delegation tools listed below cannot be called from this',
+    'session: it is already 3 levels of delegation deep, and they allow',
+    'delegation up to 3 levels. Any call will be rejected, and that will',
+    'not change for the rest of this session.',
+  ].join('\n')
+
+  test('a delegation cap declaration opens the section and changes nothing below it', () => {
+    const { agents } = resolve([discovered('analyst')])
+    expect(renderCatalog(agents, [], { depth: 3, maxDepth: 3 }))
+      .toBe(`${DEPTH_3_CAP_3}\n\n${renderCatalog(agents)}`)
+  })
+
+  test('surfaced diagnostics render identically with and without the declaration', () => {
+    const { agents, diagnostics } = resolve([
+      discovered('analyst'),
+      discovered('code-review'),
+      discovered('code_review'),
+    ])
+    const withoutNotice = renderCatalog(agents, diagnostics)
+    expect(withoutNotice).toContain('are NOT')
+    const withNotice = renderCatalog(agents, diagnostics, { depth: 3, maxDepth: 3 })
+    expect(withNotice).toBe(`${DEPTH_3_CAP_3}\n\n${withoutNotice}`)
+  })
+
+  test('a declaration is dropped when no tool mounted, whatever the caller decided', () => {
+    const { diagnostics } = resolve([discovered('code-review'), discovered('code_review')])
+    expect(renderCatalog([], diagnostics, { depth: 3, maxDepth: 3 }))
+      .toBe(renderCatalog([], diagnostics))
+    expect(renderCatalog([], [], { depth: 3, maxDepth: 3 })).toBe('')
+  })
+})
+
+describe('delegation cap declaration', () => {
+  test('stays silent while the mounted cap still admits a child', () => {
+    const { agents } = resolve([discovered('analyst')])
+    expect(delegationCapNotice(agents, 1)).toBeUndefined()
+  })
+
+  test('fires once the Agent has reached the mounted cap', () => {
+    const { agents } = resolve([discovered('analyst')])
+    expect(delegationCapNotice(agents, 3)).toEqual({ depth: 3, maxDepth: 3 })
+  })
+
+  test('fires past the cap as well', () => {
+    const { agents } = resolve([discovered('analyst')])
+    expect(delegationCapNotice(agents, 5)).toEqual({ depth: 5, maxDepth: 3 })
+  })
+
+  test('reports the LARGEST numeric cap among the mounted tools', () => {
+    const { agents } = resolve([discovered('analyst'), discovered('reviewer', { maxDepth: 4 })])
+    expect(delegationCapNotice(agents, 4)).toEqual({ depth: 4, maxDepth: 4 })
+  })
+
+  test('mixed numeric caps stay silent while one of them admits a child', () => {
+    const { agents } = resolve([discovered('analyst'), discovered('reviewer', { maxDepth: 5 })])
+    expect(delegationCapNotice(agents, 4)).toBeUndefined()
+  })
+
+  test('a provider-managed cap never counts as reached', () => {
+    const { agents } = resolve([discovered('analyst', { maxDepth: 'provider-managed' })])
+    expect(delegationCapNotice(agents, 3)).toBeUndefined()
+    // Beside a numeric cap that IS exceeded, delegation through it still works.
+    const mixed = resolve([
+      discovered('analyst'),
+      discovered('reviewer', { maxDepth: 'provider-managed' }),
+    ]).agents
+    expect(delegationCapNotice(mixed, 4)).toBeUndefined()
+  })
+
+  test('an empty roster declares nothing', () => {
+    expect(delegationCapNotice([], 3)).toBeUndefined()
+  })
+
+  test('a depth-0 Agent is already blocked by a zero cap', () => {
+    const { agents } = resolve([discovered('analyst', { maxDepth: 0 })])
+    expect(delegationCapNotice(agents, 0)).toEqual({ depth: 0, maxDepth: 0 })
   })
 })
 

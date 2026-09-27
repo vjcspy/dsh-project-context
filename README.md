@@ -93,6 +93,21 @@ whole project. A generated name is additionally compared against the tool names
 already visible in that Agent's scope, both before mounting and again at the
 moment of registration; a conflict skips that file with a diagnostic.
 
+### Delegation-cap declaration
+
+When the Agent's own delegation depth leaves no room for a child under **every**
+mounted tool's `maxDepth`, the catalog section opens with a declarative
+paragraph saying that those listed tools will reject a call from this session,
+and what the two numbers are. It is a declaration of per-session state, not an
+instruction — the diagnostics block stays the section's only instructing channel
+— and it speaks only for the project-scoped tools it lists, because the
+first-party `subagent` cap is a Host setting this plugin does not own. A
+`provider-managed` cap never counts as reached. Depth 0 and an empty roster
+render byte-identical to a section with no declaration, which keeps that prompt
+prefix stable for KV cache. The depth read is the session header's monotone
+floor, so a runtime-deepened session can miss the declaration but never be
+falsely told to stop.
+
 ## Entry configuration
 
 | Key | Default | Meaning |

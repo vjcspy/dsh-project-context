@@ -179,6 +179,55 @@ export function capabilityRejection(
 }
 
 /**
+ * The Agent's own position against the project-scoped delegation caps, carried
+ * by the catalog section when no mounted tool can accept a child.
+ *
+ * Every mounted numeric cap is exceeded whenever this value exists, so
+ * `maxDepth` — the largest one — is the strongest true statement about the whole
+ * mounted set, and it is the same `maxDepth` this plugin wrote into each tool
+ * config ({@link toSubagentConfig}).
+ */
+export interface DelegationCapNotice {
+  /** The Agent's own delegation depth. */
+  readonly depth: number
+  /** The largest numeric `maxDepth` among the mounted delegation tools. */
+  readonly maxDepth: number
+}
+
+/**
+ * Decide whether the mounted project-scoped delegation tools can accept a child
+ * from an Agent at `depth`.
+ *
+ * `depth` is the monotone FLOOR the session header records, never the full
+ * runtime value: `header + 1 > cap` implies `actual + 1 > cap`, so reading the
+ * header can only MISS a notice, never over-claim one. `delegationDepthOf` is
+ * deliberately unused — it throws on an invalid runtime value
+ * (`packages/subagent/subagent/src/depth.ts:30-32`) and the only caller runs
+ * during prompt assembly, where a throw breaks the whole request.
+ *
+ * The claim is scoped to the tools it names: a `'provider-managed'` cap never
+ * counts as reached, because such a tool hands core no cap at all
+ * (`resolveMaxDepth` returns `undefined`) and delegation through it can still
+ * succeed. Degrading to no notice is the conservative direction — a false
+ * "unusable" would instruct the model away from a call that works.
+ * @param agents - the mounted agents, in catalog order.
+ * @param depth - the Agent's delegation depth.
+ * @returns the declaration input, or undefined when a child is still possible.
+ */
+export function delegationCapNotice(
+  agents: readonly ResolvedAgent[],
+  depth: number,
+): DelegationCapNotice | undefined {
+  const blocked = agents.length > 0
+    && agents.every(entry => typeof entry.maxDepth === 'number' && depth + 1 > entry.maxDepth)
+  if (!blocked) return undefined
+  const caps = agents
+    .map(entry => entry.maxDepth)
+    .filter((cap): cap is number => typeof cap === 'number')
+  return { depth, maxDepth: Math.max(...caps) }
+}
+
+/**
  * Render the Agent-scoped catalog section body.
  *
  * The first-party tool description is generic per transport and background
@@ -198,17 +247,36 @@ export function capabilityRejection(
  * otherwise the only party that can explain a missing agent to the operator,
  * and it has to be told. The block is emitted even when nothing mounted, which
  * is precisely the case the log alone failed to make visible.
+ *
+ * A `notice` opens the section with a second declaration of PER-SESSION state:
+ * that the tools listed beneath it will reject a call from this session. It
+ * belongs in the same section for the diagnostics channel's own reason — no
+ * static rule file can know this Agent's depth — and it adds no instruction, so
+ * the diagnostics block stays the only instructing channel. Depth 0 never
+ * carries one, which keeps that prompt prefix byte-identical for KV cache.
  * @param agents - the agents whose tools actually mounted.
  * @param diagnostics - every diagnostic recorded for this roster.
+ * @param notice - the Agent's delegation-cap declaration, when no mounted tool
+ *   can accept a child from this session.
  * @returns the section text, or the empty string when there is nothing to say.
  */
 export function renderCatalog(
   agents: readonly ResolvedAgent[],
   diagnostics: readonly Diagnostic[] = [],
+  notice?: DelegationCapNotice,
 ): string {
   const surfaced = renderSurfacedDiagnostics(diagnostics)
   if (agents.length === 0 && surfaced.length === 0) return ''
   const parts: string[] = []
+  if (agents.length > 0 && notice !== undefined) {
+    parts.push(
+      'The project-scoped delegation tools listed below cannot be called from this',
+      `session: it is already ${notice.depth} levels of delegation deep, and they allow`,
+      `delegation up to ${notice.maxDepth} levels. Any call will be rejected, and that will`,
+      'not change for the rest of this session.',
+      '',
+    )
+  }
   if (agents.length > 0) {
     parts.push(
       'Project-scoped subagents declared in this working directory. Each is a separate',

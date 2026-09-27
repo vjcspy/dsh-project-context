@@ -54,7 +54,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
 import { resolveCommandBounds, scanCommands } from './commands-discovery.ts'
 import { installCommands, resolveCommands } from './commands-install.ts'
-import { capabilityRejection, renderCatalog, resolveAgents, toSubagentConfig } from './config-mapping.ts'
+import { capabilityRejection, delegationCapNotice, renderCatalog, resolveAgents, toSubagentConfig } from './config-mapping.ts'
 import { capabilityOf, DiagnosticSink, errorsOf, forCapability, MCP_HEALTH_ROUTE, renderMcpHealthScript, renderReport, renderWebNotice, replaceCapability } from './diagnostics.ts'
 import { discover, resolveBounds } from './discovery.ts'
 import { CircuitBreaker, lookupLinkedDocuments } from './linked-documents/backend.ts'
@@ -268,12 +268,20 @@ export function apply(ctx: Context, config: Config = {}): void {
           name: CATALOG_SECTION,
           // Immediately after the first-party delegation-tool guidance.
           order: systemPrompt.getSectionOrder('TOOL_SUBAGENT') + 1,
-          text: () => renderCatalog(
-            roster.agents.filter(entry => mountedToolNames.has(entry.toolName)),
-            // Agents only: the catalog tells the model which DELEGATION TOOLS
-            // are missing, so a command-file rejection here would be a lie.
-            forCapability(roster.diagnostics, 'agents'),
-          ),
+          text: () => {
+            const mounted = roster.agents.filter(entry => mountedToolNames.has(entry.toolName))
+            return renderCatalog(
+              mounted,
+              // Agents only: the catalog tells the model which DELEGATION TOOLS
+              // are missing, so a command-file rejection here would be a lie.
+              forCapability(roster.diagnostics, 'agents'),
+              // Read at assembly time so the declaration follows the Agent that
+              // is asking. The header value is the monotone depth FLOOR
+              // (`packages/subagent/subagent/src/depth.ts:19-35`), which can
+              // only under-report — see `delegationCapNotice`.
+              delegationCapNotice(mounted, agent.session.header.delegationDepth ?? 0),
+            )
+          },
         }))
       }
 
