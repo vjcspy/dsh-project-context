@@ -102,11 +102,13 @@ and what the two numbers are. It is a declaration of per-session state, not an
 instruction — the diagnostics block stays the section's only instructing channel
 — and it speaks only for the project-scoped tools it lists, because the
 first-party `subagent` cap is a Host setting this plugin does not own. A
-`provider-managed` cap never counts as reached. Depth 0 and an empty roster
-render byte-identical to a section with no declaration, which keeps that prompt
-prefix stable for KV cache. The depth read is the session header's monotone
-floor, so a runtime-deepened session can miss the declaration but never be
-falsely told to stop.
+`provider-managed` cap never counts as reached. An empty roster renders
+nothing, and a depth-0 Agent renders byte-identically to a section with no
+declaration unless a mounted tool already caps at `0` — the only depth-0 case
+that can reach the declaration — which keeps the ordinary depth-0 prompt prefix
+stable for KV cache. The depth read is the session header's monotone floor, so a
+runtime-deepened session can miss the declaration but never be falsely told to
+stop.
 
 ## Entry configuration
 

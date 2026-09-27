@@ -101,9 +101,10 @@ test('a depth-0 Agent keeps the catalog section byte-identical to today\'s rende
   const request = recordedRequests[0]
   expect(request?.tools?.map(tool => tool.name)).toContain('agent_analyst')
   const text = systemText(request)
-  // Full-section equality: the bytes in the prompt are exactly what the
-  // renderer produces with no declaration input, which is what keeps the
-  // depth-0 prompt prefix stable for KV cache.
+  // Containment, not full-section equality: the prompt carries the renderer's
+  // output for this roster byte-for-byte, and the exact concatenation of a
+  // declaration with that section is pinned verbatim at unit level. Nothing in
+  // this roster caps at 0, so the depth-0 prefix stays stable for KV cache.
   expect(text).toContain(renderCatalog([analyst(path)]))
   expect(text).not.toContain('levels of delegation deep')
 })

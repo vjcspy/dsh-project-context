@@ -252,8 +252,9 @@ export function delegationCapNotice(
  * that the tools listed beneath it will reject a call from this session. It
  * belongs in the same section for the diagnostics channel's own reason — no
  * static rule file can know this Agent's depth — and it adds no instruction, so
- * the diagnostics block stays the only instructing channel. Depth 0 never
- * carries one, which keeps that prompt prefix byte-identical for KV cache.
+ * the diagnostics block stays the only instructing channel. A depth-0 Agent
+ * carries one only when a mounted tool already caps at `0`, so the ordinary
+ * depth-0 prompt prefix stays byte-identical for KV cache.
  * @param agents - the agents whose tools actually mounted.
  * @param diagnostics - every diagnostic recorded for this roster.
  * @param notice - the Agent's delegation-cap declaration, when no mounted tool
