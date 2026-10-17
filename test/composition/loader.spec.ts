@@ -19,6 +19,8 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
+import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry'
+import * as Persona from '@deepseek-ai/dsh-persona'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import LlmRuntime, { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
@@ -28,6 +30,7 @@ import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SpawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import { FixtureWorkingDirectory } from './harness.ts'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const builtEntry = join(packageRoot, 'lib', 'index.js')
@@ -90,7 +93,15 @@ test('the built plugin composes through a real cordis.yml and reaches the first 
     "- name: '@deepseek-ai/dsh-agent'",
     "- name: '@deepseek-ai/dsh-subagent'",
     "- name: '@deepseek-ai/dsh-subagent-spawn-in-process'",
-    // Exactly the entry `cordis.patch.yml` inserts.
+    // The subagent runtime only owns \`ctx.subagents\` once \`workingDirectory\`
+    // resolves, and the delegation contract selects a preset, so both seams are
+    // part of the composed topology. The working-directory row is this repo's
+    // own fixture, which carries no filesystem of its own.
+    "- name: '@deepseek-ai/dsh-working-directory'",
+    "- name: '@deepseek-ai/dsh-agent-preset-registry'",
+    '  config:',
+    "    default: 'standard'",
+    // Exactly the entry \`cordis.patch.yml\` inserts.
     '- id: dsh-project-context',
     "  name: 'dsh-project-context'",
     '  config:',
@@ -109,6 +120,12 @@ test('the built plugin composes through a real cordis.yml and reaches the first 
     ['@deepseek-ai/dsh-agent', AgentRegistry],
     ['@deepseek-ai/dsh-subagent', SubagentRuntime],
     ['@deepseek-ai/dsh-subagent-spawn-in-process', SpawnProvider],
+    ['@deepseek-ai/dsh-working-directory', FixtureWorkingDirectory],
+    ['@deepseek-ai/dsh-agent-preset-registry', AgentPresets],
+    // Resolvable, but never a root row: the persona row is mounted inside the
+    // project preset's own scope, and mounting it globally collides with the
+    // prompt registry's persona registration.
+    ['@deepseek-ai/dsh-persona', Persona],
     ['dsh-project-context', built],
     ['@deepseek-ai/dsh-agent-loop', AgentLoop],
   ])

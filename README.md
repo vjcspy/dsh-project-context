@@ -6,7 +6,7 @@ harness**.
 
 - Drop `analyst.md` into `<repo>/.dsh/agents/`, and an `agent_analyst`
   delegation tool becomes callable in that repo — with its own model, reasoning
-  effort, persona and tool restrictions — and only in that repo.
+  effort and persona — and only in that repo.
 - Drop any `*.md` into `<repo>/.dsh/rules/`, and its contents reach every Agent
   working in that repo, verbatim, from the first request.
 - Drop `brainstorm.md` into `<repo>/.dsh/commands/`, and `/brainstorm` becomes
@@ -15,7 +15,10 @@ harness**.
 
 This plugin **registers no tool of its own**. For agents it mounts first-party
 `@deepseek-ai/dsh-tool-subagent` instances into each Agent's context scope, so
-host upgrades come free and there is no dispatch code to maintain.
+host upgrades come free and there is no dispatch code to maintain. Each of those
+instances selects an **Agent Preset** this plugin registered for that one
+definition, which is where DSH keeps a delegated agent's persona and its whole
+plugin composition.
 
 ***
 
@@ -62,15 +65,15 @@ The markdown body becomes the child's persona.
 | --- | --- | --- | --- |
 | `name` | string | — | Required. Matches `^[a-z0-9]+(?:[-_][a-z0-9]+)*$`, at most 48 chars. Decides identity for project-over-global shadowing; the filename does not. |
 | `description` | string | — | Required, non-empty, single line, at most 200 chars, no balanced `{{ … }}`. Becomes one agent-catalog row. |
-| `transport` | `spawn` \| `fork` | `spawn` | Names the `ctx.subagents` transport, **not** an LLM provider. Any other value is rejected. |
-| `background` | `one-shot` \| `continuable` | `one-shot` | `continuable` requires a transport with `prepareContinuable`. |
+| `transport` | `spawn` \| `fork` | `spawn` | Names the `ctx.subagents` transport, **not** an LLM provider. Any other value is rejected. A `fork` child inherits the delegating Agent's composition, so the body is inert for it. |
+| `background` | `one-shot` \| `continuable` | `one-shot` | Validated, then **inert**: the delegation contract has no background mode, so every child runs one-shot and a `continuable` file is reported as a `notice`. |
 | `maxDepth` | non-negative safe integer \| `provider-managed` | `3` | Always emitted explicitly — a direct `apply()` omission would be capless. A numeric cap requires the transport's `depthLimit` capability. |
 | `llm.provider` | string | — | Required together with `llm.model`. Requires the transport's `agentOptions` capability. |
 | `llm.model` | string | — | Required together with `llm.provider`. |
 | `llm.reasoningEffort` | string | — | Non-empty when present. |
-| `tools.allow` | string[] | — | Non-empty array of non-empty names. |
-| `tools.deny` | string[] | — | Non-empty array of non-empty names. |
-| body | markdown | — | Required, non-empty, no balanced `{{ … }}`. Becomes the `persona` **prefix** section — harness identity and tool sections still render beneath it. |
+| `tools.allow` | string[] | — | Non-empty array of non-empty names. Validated, then **inert** (§ Agent Presets). |
+| `tools.deny` | string[] | — | Non-empty array of non-empty names. Validated, then **inert** (§ Agent Presets). |
+| body | markdown | — | Required, non-empty, no balanced `{{ … }}`. Becomes this agent's Agent Preset persona row (the `deployment:persona-prefix` section) — harness identity and tool sections still render beneath it. |
 
 **Unknown keys are rejected**, at the top level and inside `llm` / `tools`. An
 explicit YAML `null` is a value, not an omission, and is rejected rather than
@@ -92,6 +95,24 @@ shadow globals, so an unnamespaced `read.md` would hijack a core tool for the
 whole project. A generated name is additionally compared against the tool names
 already visible in that Agent's scope, both before mounting and again at the
 moment of registration; a conflict skips that file with a diagnostic.
+
+### Agent Presets, and what the markdown can no longer say
+
+Every generated tool carries `agentPreset: dsh-project-context:agent_<slug>:<digest>`.
+The preset's plugin list is the persona row built from the file's markdown body
+plus the rows of the composition the delegating Agent already runs, so a child
+keeps its tools and gains this agent's identity. The digest covers that finished
+list, so two Sessions of one project share a single registration while two
+projects declaring the same name with different bodies never do.
+
+Three cases do not carry the markdown body, because this baseline has no
+equivalent for what they used to forward:
+
+| Case | Why it is inert |
+| --- | --- |
+| `tools.allow` / `tools.deny` | A preset expresses tool composition as an explicit plugin list. A name filter has no translation, and the child runs the delegating Agent's composition instead. Every file declaring the key gets a `notice` diagnostic naming it. |
+| `background: continuable` | The delegation contract has no background mode; every child runs one-shot. A file asking for `continuable` gets a `notice` diagnostic. |
+| `transport: fork` | A fork child inherits the delegating Agent's whole composition and its transport cannot select a preset. The tool still mounts, because losing a persona is not worth losing the delegation tool, and the host log names the file. |
 
 ### Delegation-cap declaration
 

@@ -1,19 +1,30 @@
 /**
- * Map validated agent files onto the first-party `dsh-tool-subagent` config.
+ * Map validated agent files onto the first-party `dsh-tool-subagent` config and
+ * onto the Agent Preset that carries the agent's own composition.
  *
- * Two hazards drive this module:
+ * Three hazards drive this module:
  * - **Scoped tools shadow globals silently** (`packages/core/tools/src/index.ts:1021-1024`),
  *   so a generated name is checked against the effective pre-mount tool-name
  *   universe and a conflict skips the file rather than hijacking a core tool.
  * - **Direct `apply()` bypasses Schemastery defaults**
  *   (`packages/subagent/tool-subagent/src/index.ts:313-316`), so `maxDepth` is
  *   always emitted explicitly; an omission would be capless.
+ * - **A preset is a complete composition, never a diff.** An Agent scope's
+ *   parent link is what decides which rows it sees
+ *   (`packages/preset/agent-preset-registry/README.md:56`), and this deployment
+ *   disables the root tool rows so the presets own them. A preset carrying only
+ *   the persona row would therefore hand every delegated child an agent with no
+ *   tools at all, which is why {@link agentPresetDefinition} re-declares the
+ *   composition its parent already runs.
  *
  * @module dsh-project-context/config-mapping
  */
 
+import { createHash } from 'node:crypto'
+import type { PresetDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Config as SubagentToolConfig } from '@deepseek-ai/dsh-tool-subagent'
+import { JSON_SCHEMA, Type, load as loadYaml } from 'js-yaml'
 import { renderSurfacedDiagnostics } from './diagnostics.ts'
 import type { DiagnosticSink } from './diagnostics.ts'
 import type { Diagnostic, DiscoveredAgentFile, ResolvedAgent } from './types.ts'
@@ -25,6 +36,26 @@ export const TOOL_NAME_PREFIX = 'agent_'
 
 /** Reserved transport name that may never be registered as an ordinary tool. */
 export const RESERVED_TOOL_NAME = 'run_code'
+
+/**
+ * Package specifier of the first-party persona row an Agent Preset mounts.
+ *
+ * The module's own `name` export is `persona`, but a preset row is resolved by
+ * the Loader as a module specifier, so the package name is what belongs here
+ * (`packages/bundle/web-app/presets/cordis.patch.yml:13-17`).
+ */
+export const PERSONA_PLUGIN = '@deepseek-ai/dsh-persona'
+
+/**
+ * Owning prefix of every Agent Preset id this plugin registers.
+ *
+ * The registry is deployment-wide, so the prefix keeps a project preset from
+ * ever colliding with a preset the profile declares (`standard`, `minimal`, …).
+ */
+export const PRESET_ID_PREFIX = 'dsh-project-context:'
+
+/** One row of an Agent Preset's plugin list. */
+export type PresetPlugin = PresetDefinition['plugins'][number]
 
 /**
  * Derive the model-facing tool name for an agent name.
@@ -81,6 +112,26 @@ export function resolveAgents(
       })
       continue
     }
+    // Both of these keys stay parsed and validated, but neither reaches the
+    // delegation contract on this baseline any more. Reported during the roster
+    // pass so the operator reads it whatever the file's mount outcome turns out
+    // to be: a lost instruction is invisible otherwise.
+    if (file.fields.tools !== undefined) {
+      sink.add({
+        severity: 'notice',
+        path: file.path,
+        field: 'tools',
+        reason: `\`tools\` is inert on this DSH baseline: tool composition is a preset plugin list, and a name filter has no equivalent, so this agent mounts with the deployment toolset`,
+      })
+    }
+    if (file.fields.background === 'continuable') {
+      sink.add({
+        severity: 'notice',
+        path: file.path,
+        field: 'background',
+        reason: '`background: continuable` is inert on this DSH baseline: the delegation contract has no background mode, so the child always runs one-shot',
+      })
+    }
     takenToolNames.set(toolName, file.path)
     resolved.push({
       name: file.fields.name,
@@ -102,10 +153,18 @@ export function resolveAgents(
 
 /**
  * Project one resolved agent onto the first-party delegation-tool config.
+ *
+ * The removed keys are gone on purpose: `persona` and `toolFilter` are refused
+ * outright by this baseline (`packages/subagent/tool-subagent/src/index.ts:147-151`)
+ * and `backgroundMode` no longer exists, so the child's identity travels in the
+ * Agent Preset named by `agentPreset` instead.
  * @param agent - one resolved agent.
+ * @param agentPreset - the preset id {@link agentPresetDefinition} produced for
+ *   it, or undefined for a transport that cannot select one (see
+ *   {@link presetSelectable}).
  * @returns the config to hand to `ToolSubagent.apply`.
  */
-export function toSubagentConfig(agent: ResolvedAgent): SubagentToolConfig {
+export function toSubagentConfig(agent: ResolvedAgent, agentPreset?: string): SubagentToolConfig {
   return {
     // `transport` names the ctx.subagents provider; `llm.provider` names the LLM
     // route. Conflating them under one `provider` key would route the wrong layer.
@@ -114,8 +173,9 @@ export function toSubagentConfig(agent: ResolvedAgent): SubagentToolConfig {
     // Per-agent models are fixed by the markdown; runtime override would add
     // three parameters to every tool schema for no requested benefit.
     modelSelectionSettings: false,
-    backgroundMode: agent.background,
-    persona: agent.persona,
+    // The markdown body is the preset's persona row, and the preset is where
+    // this baseline reads a child's identity and its tool composition.
+    ...(agentPreset === undefined ? {} : { agentPreset }),
     // Always explicit: a direct-apply omission stays capless.
     maxDepth: agent.maxDepth,
     ...(agent.llm === undefined
@@ -129,24 +189,100 @@ export function toSubagentConfig(agent: ResolvedAgent): SubagentToolConfig {
               : { reasoningEffort: ReasoningEffortId(agent.llm.reasoningEffort) }),
           },
         }),
-    ...(agent.toolFilter === undefined
-      ? {}
-      : {
-          toolFilter: {
-            ...(agent.toolFilter.allow === undefined ? {} : { allow: [...agent.toolFilter.allow] }),
-            ...(agent.toolFilter.deny === undefined ? {} : { deny: [...agent.toolFilter.deny] }),
-          },
-        }),
   }
+}
+
+/**
+ * Build the Agent Preset that carries one project agent's composition.
+ *
+ * `inherited` is the plugin list of the composition the delegating Agent
+ * already runs. It is re-declared rather than referenced because a preset owns
+ * its whole composition: the persona row alone would leave the child with the
+ * root rows, and this deployment disables every root tool row. The parent's own
+ * persona row is dropped, so the markdown body always wins.
+ *
+ * The id carries a digest of the final row list. Two Sessions of one project
+ * therefore ask for the same preset (the caller reuses it, see
+ * `index.ts`), while two projects declaring the same agent name with different
+ * bodies can never share one.
+ * @param agent - one resolved agent.
+ * @param inherited - the parent composition's rows, in order; empty when the
+ *   Agent runs without a preset.
+ * @returns the definition to hand to `ctx.agentPresets.register`.
+ */
+export function agentPresetDefinition(
+  agent: ResolvedAgent,
+  inherited: readonly PresetPlugin[] = [],
+): PresetDefinition {
+  const plugins: readonly PresetPlugin[] = [
+    { name: PERSONA_PLUGIN, config: { prefix: agent.persona } },
+    ...inherited.filter(row => row.name !== PERSONA_PLUGIN),
+  ]
+  const digest = createHash('sha256').update(JSON.stringify(plugins)).digest('hex').slice(0, 8)
+  return {
+    id: `${PRESET_ID_PREFIX}${agent.toolName}:${digest}`,
+    name: agent.toolName,
+    description: agent.description,
+    plugins,
+  }
+}
+
+/** A `!!js` expression node, as the Loader serializes and later evaluates one. */
+interface JsExpressionNode {
+  readonly __jsExpr: string
+}
+
+/**
+ * Decode one Agent Preset's declared plugin list, as the registry publishes it.
+ *
+ * `AgentPresetRegistry.readDocument` serializes the list in the Loader's own
+ * YAML dialect, where a `!!js` scalar is an expression node
+ * (`{ __jsExpr: '…' }`) that the Loader evaluates at activation, so a naive
+ * parse either throws on the tag or loses the condition. The tag is rebuilt
+ * here rather than imported, because `@deepseek-ai/cordis-plugin-include`
+ * (`vendor/include/src/index.ts:9-23`) is a harness package the installed
+ * profile does not carry for a plugin to import at runtime; the node shape is
+ * the Loader's own `isJsExpr` contract (`vendor/loader/src/config/utils.ts:25-32`).
+ * @param content - the YAML body `readDocument` returned.
+ * @returns the parsed rows, or an empty list when the document is not a row list.
+ */
+export function decodePresetRows(content: string): readonly PresetPlugin[] {
+  const jsExpression = new Type('tag:yaml.org,2002:js', {
+    kind: 'scalar',
+    resolve: (data: unknown): boolean => typeof data === 'string',
+    construct: (data: unknown): JsExpressionNode => ({ __jsExpr: String(data) }),
+  })
+  const parsed: unknown = loadYaml(content, { schema: JSON_SCHEMA.extend(jsExpression) })
+  return Array.isArray(parsed) ? (parsed as readonly PresetPlugin[]) : []
 }
 
 /** Capability surface this plugin reads off a `ctx.subagents` provider. */
 export interface ProviderCapabilityView {
   readonly capabilities: {
     readonly agentOptions?: boolean
+    readonly agentPreset?: boolean
     readonly depthLimit?: boolean
   }
-  readonly prepareContinuable?: unknown
+  /** Whether the child is seeded with the parent's conversation. */
+  readonly inheritsParentContext?: boolean
+}
+
+/**
+ * Whether a transport can give its child an independently composed preset.
+ *
+ * `ToolSubagent.apply` refuses a configured preset for a provider that lacks the
+ * capability or inherits the parent's context
+ * (`packages/subagent/tool-subagent/src/preset-selection.ts:78-82`), and that
+ * refusal would cost the whole tool rather than one field. The `fork` transport
+ * is the case that matters: its child keeps the delegating Agent's composition,
+ * so a markdown body declared with `transport: fork` is inert.
+ * @param provider - the registered provider, or undefined when it has not
+ *   appeared yet (registration is deferred, so absence is not a rejection).
+ * @returns true when `agentPreset` may be configured for this transport.
+ */
+export function presetSelectable(provider: ProviderCapabilityView | undefined): boolean {
+  if (provider === undefined) return true
+  return provider.capabilities.agentPreset === true && provider.inheritsParentContext !== true
 }
 
 /**
@@ -171,9 +307,6 @@ export function capabilityRejection(
   }
   if (typeof agent.maxDepth === 'number' && provider.capabilities.depthLimit !== true) {
     return `transport "${agent.transport}" cannot enforce a numeric maxDepth (no depthLimit capability); use maxDepth: provider-managed`
-  }
-  if (agent.background === 'continuable' && provider.prepareContinuable === undefined) {
-    return `transport "${agent.transport}" does not support background: continuable`
   }
   return undefined
 }

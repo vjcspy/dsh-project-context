@@ -16,7 +16,13 @@ import type { McpServerEntry } from './mcp/types.ts'
 /** The `ctx.subagents` transport an agent file delegates through. */
 export type Transport = 'spawn' | 'fork'
 
-/** Background execution policy forwarded to `dsh-tool-subagent`. */
+/**
+ * Background execution policy an agent file may declare.
+ *
+ * Parsed and validated, but INERT on this baseline: the delegation contract has
+ * no background mode, so every child runs one-shot and `resolveAgents` records a
+ * notice for a file that asked for `continuable`.
+ */
 export type BackgroundMode = 'one-shot' | 'continuable'
 
 /** Which discovery layer a definition came from. */
@@ -35,7 +41,14 @@ export interface LlmRoute {
   readonly reasoningEffort?: string
 }
 
-/** Tool restriction requested by an agent file (maps onto `toolFilter`). */
+/**
+ * Tool restriction requested by an agent file.
+ *
+ * Parsed and validated, but INERT on this baseline: tool composition is an
+ * explicit plugin list inside an Agent Preset, which a name filter cannot
+ * express, so `resolveAgents` records a notice and the agent mounts with the
+ * composition its delegating Agent runs.
+ */
 export interface ToolRestrictionFields {
   readonly allow?: readonly string[]
   readonly deny?: readonly string[]
@@ -53,7 +66,10 @@ export interface AgentFileFields {
   readonly tools?: ToolRestrictionFields
   readonly maxDepth: number | 'provider-managed'
   readonly background: BackgroundMode
-  /** The markdown body, mapped onto the child `persona` prefix section. */
+  /**
+   * The markdown body, mapped onto the persona row of the Agent Preset this
+   * agent's delegation tool selects.
+   */
   readonly persona: string
 }
 
@@ -75,10 +91,13 @@ export interface ResolvedAgent {
   readonly toolName: string
   readonly description: string
   readonly transport: Transport
+  /** The markdown body, carried into the agent's Agent Preset. */
   readonly persona: string
   readonly llm?: LlmRoute
+  /** Declared tool restriction: resolved for the notice, never forwarded. */
   readonly toolFilter?: ToolRestrictionFields
   readonly maxDepth: number | 'provider-managed'
+  /** Declared background policy: resolved for the notice, never forwarded. */
   readonly background: BackgroundMode
   readonly path: string
   readonly layer: Layer

@@ -143,7 +143,10 @@ describe('linked-documents listener on the production loop', () => {
     }
   })
 
-  test('an injected block never replaces the tool result', async () => {
+  // The same backend gate its siblings carry: without the doc graph and the
+  // linked document there is nothing to inject, so the coexistence claim this
+  // asserts cannot be exercised at all.
+  test.skipIf(!BACKEND_AVAILABLE)('an injected block never replaces the tool result', async () => {
     const booted = await bootAndTrack()
     // A unique session id keeps the backend's own session dedup out of the way.
     const agent = await booted.createAgent(`linked-coexist-${String(Date.now())}`, AWEAWE_ROOT)

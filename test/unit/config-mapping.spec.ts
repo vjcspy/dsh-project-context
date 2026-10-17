@@ -102,23 +102,32 @@ describe('config mapping', () => {
 
   test('model selection settings stay off so the tool schema gains no parameters', () => {
     const [agent] = resolve([discovered('a')]).agents
-    expect(toSubagentConfig(agent as ResolvedAgent).modelSelectionSettings).toBe(false)
+    expect(toSubagentConfig(agent as ResolvedAgent, 'preset-a').modelSelectionSettings).toBe(false)
   })
 
-  test('an omitted toolFilter stays omitted rather than becoming a deny-all', () => {
+  test('the agent preset is what names the child composition', () => {
     const [agent] = resolve([discovered('a')]).agents
-    expect(toSubagentConfig(agent as ResolvedAgent).toolFilter).toBeUndefined()
+    expect(toSubagentConfig(agent as ResolvedAgent, 'preset-a').agentPreset).toBe('preset-a')
   })
 
-  test('tools.allow / tools.deny map onto toolFilter', () => {
-    const [agent] = resolve([discovered('a', { tools: { allow: ['read'], deny: ['write'] } })]).agents
-    expect(toSubagentConfig(agent as ResolvedAgent).toolFilter).toEqual({ allow: ['read'], deny: ['write'] })
+  test('the config keys this baseline refuses are never forwarded', () => {
+    // `persona` and `toolFilter` are rejected outright by tool-subagent and
+    // `backgroundMode` no longer exists, so any of them reappearing here is the
+    // host-killing load failure this port removed.
+    const [agent] = resolve([discovered('a', {
+      tools: { allow: ['read'], deny: ['write'] },
+      background: 'continuable',
+    })]).agents
+    const config = toSubagentConfig(agent as ResolvedAgent, 'preset-a')
+    expect('persona' in config).toBe(false)
+    expect('toolFilter' in config).toBe(false)
+    expect('backgroundMode' in config).toBe(false)
   })
 })
 
 describe('capability rejection', () => {
   const [agent] = resolve([discovered('a', { llm: { provider: 'p', model: 'm' } })]).agents
-  const spawnLike = { capabilities: { agentOptions: true, depthLimit: true }, prepareContinuable: () => undefined }
+  const spawnLike = { capabilities: { agentOptions: true, depthLimit: true } }
 
   test('an absent provider is not a rejection — registration is deferred', () => {
     expect(capabilityRejection(agent as ResolvedAgent, undefined)).toBeUndefined()
@@ -139,11 +148,6 @@ describe('capability rejection', () => {
       .toContain('cannot enforce a numeric maxDepth')
   })
 
-  test('background: continuable against a provider without prepareContinuable is rejected', () => {
-    const [cont] = resolve([discovered('cont', { background: 'continuable', maxDepth: 'provider-managed' })]).agents
-    expect(capabilityRejection(cont as ResolvedAgent, { capabilities: { agentOptions: true, depthLimit: true } }))
-      .toContain('does not support background: continuable')
-  })
 })
 
 describe('catalog', () => {

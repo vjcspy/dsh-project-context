@@ -14,6 +14,14 @@
  * and the install-ownership pattern at
  * `packages/experimental/tool-agent-team/src/index.ts:394-410`.
  *
+ * On this baseline the delegation contract takes no persona, no background mode
+ * and no tool filter, so one Agent Preset per definition carries the markdown
+ * body and the composition the delegating Agent already runs, and the mounted
+ * tool selects it with `agentPreset`. The preset is registered in the same
+ * fiber as the tool that names it, so the id `apply()` validates is never a
+ * race; a preset id is deployment-wide, so `presetLeases` reuses one definition
+ * across the Sessions of a project and disposes it with its last holder.
+ *
  * Two lifecycle facts constrain everything here:
  * - `agent/created` is dispatched synchronously and a listener throw VETOES
  *   Agent publication (`packages/core/agent/src/index.ts:545-553`), so this
@@ -43,6 +51,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { AgentPresetRegistry } from '@deepseek-ai/dsh-agent-preset-registry'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { PostToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 // Side-effect type imports: these declare the `tools`, `subagents`,
@@ -54,7 +63,8 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
 import { resolveCommandBounds, scanCommands } from './commands-discovery.ts'
 import { installCommands, resolveCommands } from './commands-install.ts'
-import { capabilityRejection, delegationCapNotice, renderCatalog, resolveAgents, toSubagentConfig } from './config-mapping.ts'
+import { agentPresetDefinition, capabilityRejection, decodePresetRows, delegationCapNotice, presetSelectable, renderCatalog, resolveAgents, toSubagentConfig } from './config-mapping.ts'
+import type { PresetPlugin } from './config-mapping.ts'
 import { capabilityOf, DiagnosticSink, errorsOf, forCapability, MCP_HEALTH_ROUTE, renderMcpHealthScript, renderReport, renderWebNotice, replaceCapability } from './diagnostics.ts'
 import { discover, resolveBounds } from './discovery.ts'
 import { CircuitBreaker, lookupLinkedDocuments } from './linked-documents/backend.ts'
@@ -185,6 +195,117 @@ export function apply(ctx: Context, config: Config = {}): void {
   const reports = new Map<string, readonly Diagnostic[]>()
 
   /**
+   * Live Agent Preset registrations, refcounted by preset id.
+   *
+   * `ctx.agentPresets` is deployment-wide, not per Agent: two Sessions of one
+   * project resolve the same markdown into the same preset id, and the registry
+   * refuses a duplicate. The lease turns that second registration into a reuse,
+   * and the LAST holder disposes, so a definition lives exactly as long as some
+   * Agent scope depends on it.
+   */
+  const presetLeases = new Map<string, { users: number; unregister: () => Promise<void> }>()
+  /** Published row lists per parent preset id, so a roster parses one document once. */
+  const parentPresetRows = new Map<string, readonly PresetPlugin[]>()
+
+  /**
+   * Release one lease, unregistering the preset when its last holder is gone.
+   *
+   * Disposal races the registry's own teardown at shutdown, where the service
+   * may already be gone; a failed unregister is then not worth a broken exit.
+   * @param id - the preset id whose lease is released.
+   */
+  const releasePreset = async (id: string): Promise<void> => {
+    const lease = presetLeases.get(id)
+    if (lease === undefined) return
+    lease.users--
+    if (lease.users > 0) return
+    presetLeases.delete(id)
+    try {
+      await lease.unregister()
+    } catch (error: unknown) {
+      ctx.logger.warn(`dsh-project-context: could not unregister Agent Preset "${id}": ${String(error)}`)
+    }
+  }
+
+  /**
+   * Start reading the rows of the composition the delegating Agent already runs.
+   *
+   * A preset cannot reference another preset, so the rows are re-declared from
+   * the registry's own document. The read is kicked off here, BEFORE the tool
+   * fibers are created, because it has to be in `parentPresetRows` by the time
+   * a fiber callback runs: registration itself may not await it (see
+   * `acquirePreset`), and a microtask started now resolves before the deferred
+   * fiber callback that needs it.
+   *
+   * An Agent running without a preset (a preset-free composition, or a test
+   * harness) has nothing to inherit, and one whose document cannot be read keeps
+   * the persona row alone rather than failing to mount.
+   * @param registry - the Agent Preset registry.
+   * @param agent - the Agent whose composition is inherited.
+   */
+  const primePresetRows = (registry: AgentPresetRegistry, agent: Agent): void => {
+    const parentId = registry.composedPreset(agent.ctx)
+    if (parentId === undefined || parentPresetRows.has(parentId)) return
+    void registry.readDocument(parentId).then(
+      (document) => { parentPresetRows.set(parentId, decodePresetRows(document.content)) },
+      (error: unknown) => {
+        ctx.logger.warn(
+          `dsh-project-context: could not read Agent Preset "${parentId}", which this Agent runs; its project agents fall back to a persona-only preset: ${String(error)}`,
+        )
+      },
+    )
+  }
+
+  /**
+   * The parent composition's rows, as {@link primePresetRows} left them.
+   * @param registry - the Agent Preset registry.
+   * @param agent - the Agent whose composition is inherited.
+   * @returns the rows, or an empty list while the read is still outstanding.
+   */
+  const inheritedPresetRows = (registry: AgentPresetRegistry, agent: Agent): readonly PresetPlugin[] => {
+    const parentId = registry.composedPreset(agent.ctx)
+    return parentId === undefined ? [] : parentPresetRows.get(parentId) ?? []
+  }
+
+  /**
+   * Register (or reuse) one agent's preset for this Agent's scope.
+   *
+   * Deliberately SYNCHRONOUS. `agent/created` is dispatched inline and a
+   * returned Promise is not awaited (`packages/core/agent/src/index.ts:545-553`,
+   * and `discovery.ts` for the same reason), while the Agent's FIRST model
+   * request assembles from whatever the tool registry holds when it runs. So the
+   * definition has to reach the registry in THIS tick: `register` inserts it
+   * synchronously and only awaits its activation, which is kept for disposal
+   * instead of being awaited here.
+   * @param registry - the Agent Preset registry.
+   * @param agent - the Agent the preset will be selected from.
+   * @param resolved - one resolved agent definition.
+   * @returns the preset id and the disposer owned by the calling fiber.
+   */
+  const acquirePreset = (
+    registry: AgentPresetRegistry,
+    agent: Agent,
+    resolved: ResolvedAgent,
+  ): { id: string; dispose: () => Promise<void> } => {
+    const definition = agentPresetDefinition(resolved, inheritedPresetRows(registry, agent))
+    const live = presetLeases.get(definition.id)
+    if (live !== undefined) {
+      live.users++
+      return { id: definition.id, dispose: () => releasePreset(definition.id) }
+    }
+    const pending = registry.register(definition)
+    presetLeases.set(definition.id, {
+      users: 1,
+      unregister: async () => { await (await pending)() },
+    })
+    void pending.catch((error: unknown) => {
+      presetLeases.delete(definition.id)
+      ctx.logger.warn(`dsh-project-context: Agent Preset "${definition.id}" could not be registered: ${String(error)}`)
+    })
+    return { id: definition.id, dispose: () => releasePreset(definition.id) }
+  }
+
+  /**
    * Resolve the roster for one Agent. A child Agent reuses its parent's
    * already-resolved roster; a top-level Agent always rescans, which is what
    * makes a newly dropped markdown file take effect in the next session.
@@ -212,6 +333,8 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   const install = (agent: Agent): void => {
     if (installed.has(agent)) return
+    const presets = ctx.get('agentPresets')
+    if (presets !== undefined) primePresetRows(presets, agent)
     let roster: Roster
     try {
       roster = rosterFor(agent)
@@ -285,8 +408,25 @@ export function apply(ctx: Context, config: Config = {}): void {
         }))
       }
 
+      // `inject` defers until the service exists, so a composition whose preset
+      // registry activates later still gets its agents. If it NEVER appears the
+      // callback simply never runs — a silent no-op — so that case is reported
+      // here rather than left to be discovered by hand. The delegation contract
+      // itself refuses a persona outside a preset, so there is no fallback.
+      if (roster.agents.length > 0 && agent.ctx.get('agentPresets') === undefined) {
+        publish('agents', [
+          ...forCapability(roster.diagnostics, 'agents'),
+          {
+            severity: 'error',
+            capability: 'agents',
+            path: roster.projectRoot ?? roster.cwd,
+            reason: `the "agentPresets" service is not mounted in this composition; ${String(roster.agents.length)} project agent definition(s) were not mounted`,
+          },
+        ], 0)
+      }
+
       for (const resolved of roster.agents) {
-        const fiber = agent.ctx.inject(ToolSubagent.inject, (runtimeCtx) => {
+        const fiber = agent.ctx.inject([...ToolSubagent.inject, 'agentPresets'], (runtimeCtx) => {
           // Final pre-mount guard, evaluated at the moment of registration:
           // shadowing is a VALID registration, so it cannot be caught by a
           // transactional rollback and must be prevented here.
@@ -301,11 +441,36 @@ export function apply(ctx: Context, config: Config = {}): void {
             ctx.logger.warn(`dsh-project-context: skipped ${resolved.path} — ${rejection}`)
             return
           }
+          const selectable = presetSelectable(runtimeCtx.subagents.getProvider(resolved.transport))
+          let preset: { id: string; dispose: () => Promise<void> } | undefined
+          if (!selectable) {
+            // A context-inheriting transport keeps this Agent's composition, so
+            // the markdown body cannot travel with it. The tool still mounts:
+            // losing a persona is not worth losing the delegation tool.
+            ctx.logger.warn(
+              `dsh-project-context: ${resolved.path} declares transport "${resolved.transport}", which cannot select an Agent Preset; the markdown body is inert and the child inherits this Agent's composition`,
+            )
+          } else {
+            let lease: { id: string; dispose: () => Promise<void> }
+            try {
+              // The preset is registered BEFORE the tool that names it: `apply`
+              // validates a direct-apply session's preset with `readDocument`, so
+              // the other order would reject the mount it is about to make.
+              lease = acquirePreset(runtimeCtx.agentPresets, agent, resolved)
+            } catch (error: unknown) {
+              ctx.logger.warn(`dsh-project-context: skipped ${resolved.path} — Agent Preset registration failed: ${String(error)}`)
+              return
+            }
+            preset = lease
+            // Owned by this fiber, so an unloaded plugin or a disposed Agent
+            // releases exactly the reference it took.
+            runtimeCtx.effect(() => lease.dispose)
+          }
           try {
             // Registration is deferred to this fiber precisely so a provider
             // that activates in parallel is not lost to a synchronous race;
             // `ToolSubagent.apply` itself handles a provider that appears later.
-            ToolSubagent.apply(runtimeCtx, toSubagentConfig(resolved), agent.session)
+            ToolSubagent.apply(runtimeCtx, toSubagentConfig(resolved, preset?.id), agent.session)
             mountedToolNames.add(resolved.toolName)
           } catch (error: unknown) {
             ctx.logger.warn(`dsh-project-context: skipped ${resolved.path} — mount failed: ${String(error)}`)

@@ -35,12 +35,19 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as ForkProvider from '@deepseek-ai/dsh-subagent-fork-in-process'
 import { DiagnosticSink } from '../../src/diagnostics.ts'
+import { mountDelegationDependencies } from './harness.ts'
 import * as ProjectContext from '../../src/index.ts'
 import { DEFAULT_RULE_BOUNDS, digestOf } from '../../src/rules-discovery.ts'
 import { reconcileRules, recoverStateFromHistory } from '../../src/rules-reconcile.ts'
 import type { RuleScan } from '../../src/types.ts'
 
-/** Marker planted in the forked child's persona so its requests are identifiable. */
+/**
+ * The forked child's markdown body.
+ *
+ * On this baseline a `fork` child inherits the delegating Agent's composition
+ * and its transport cannot select a preset, so this text never reaches the
+ * child's prompt. The child's requests are therefore identified by Session.
+ */
 const CHILD_MARKER = 'I AM THE FORKED CHILD'
 
 const requests: GenerateOptions[] = []
@@ -110,6 +117,7 @@ async function fixture(label: string, ruleBody: string): Promise<Fixture> {
 
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  disposers.push((await mountDelegationDependencies(ctx)).dispose)
   ctx.llm.registerAdapter(['mock'], new ProbeAdapter())
   const children: Agent[] = []
   ctx.on('agent/created', ({ agent }) => {
@@ -141,21 +149,9 @@ function rulesOf(request: GenerateOptions | undefined): Message[] {
   return (request?.messages ?? []).filter(message => message.source.kind === 'project-rules')
 }
 
-function systemTextOf(request: GenerateOptions): string {
-  return (request.messages.find(message => message.role === 'system')?.content ?? [])
-    .filter(block => block.type === 'text')
-    .map(block => block.text)
-    .join('')
-}
-
-/** Requests issued by a forked child, identified by its shadowing persona. */
-function childRequests(): GenerateOptions[] {
-  return requests.filter(request => systemTextOf(request).includes(CHILD_MARKER))
-}
-
-/** Requests issued by the parent. */
-function parentRequests(): GenerateOptions[] {
-  return requests.filter(request => !systemTextOf(request).includes(CHILD_MARKER))
+/** Requests one Agent issued, identified by the Session the loop stamps on them. */
+function requestsOf(agent: Agent): GenerateOptions[] {
+  return requests.filter(request => request.sessionId === agent.session.header.id)
 }
 
 function textOf(message: Message | undefined): string {
@@ -175,10 +171,10 @@ function rulesEventsOf(agent: Agent): Array<{ id: string; snapshot: string; clea
   return out
 }
 
-/** Fire the fork tool on exactly one parent request index. */
-function forkOnParentRequest(index: number): void {
+/** Fire the fork tool on exactly one request of the parent Session. */
+function forkOnParentRequest(parent: Agent, index: number): void {
   script = (options, current) => (
-    current === index && !systemTextOf(options).includes(CHILD_MARKER)
+    current === index && options.sessionId === parent.session.header.id
       ? { kind: 'tool-call', name: 'agent_forked', args: { description: 'probe', prompt: 'go' } }
       : { kind: 'text', text: 'done' }
   )
@@ -195,13 +191,13 @@ describe('fork inheritance', () => {
     const parentMessage = rulesOf(requests[0])[0]
     expect(parentMessage).toBeDefined()
 
-    forkOnParentRequest(1)
+    forkOnParentRequest(f.parent, 1)
     await f.prompt(f.parent, 'two')
 
     expect(f.children).toHaveLength(1)
     const child = f.children[0]
     expect(child).toBeDefined()
-    const childReqs = childRequests()
+    const childReqs = requestsOf(f.children[0] as Agent)
     expect(childReqs.length).toBeGreaterThan(0)
 
     const inherited = rulesOf(childReqs[0])
@@ -231,7 +227,7 @@ describe('fork inheritance', () => {
     const original = 'ORIGINAL FORK BODY'
     const f = await fixture('delta', original)
     await f.prompt(f.parent, 'one')
-    forkOnParentRequest(1)
+    forkOnParentRequest(f.parent, 1)
     await f.prompt(f.parent, 'two')
     const child = f.children[0]
     expect(child).toBeDefined()
@@ -280,14 +276,14 @@ describe('fork inheritance', () => {
 
     writeFileSync(f.rulePath, 'SECOND FORK BODY', 'utf8')
     await f.prompt(f.parent, 'two')
-    const parentLatest = rulesOf(parentRequests().at(-1)).at(-1)
+    const parentLatest = rulesOf(requestsOf(f.parent).at(-1)).at(-1)
     expect(textOf(parentLatest)).toContain('SECOND FORK BODY')
 
-    forkOnParentRequest(2)
+    forkOnParentRequest(f.parent, 2)
     await f.prompt(f.parent, 'three')
 
     expect(f.children).toHaveLength(1)
-    const childReqs = childRequests()
+    const childReqs = requestsOf(f.children[0] as Agent)
     expect(childReqs.length).toBeGreaterThan(0)
     const inherited = rulesOf(childReqs[0])
     // Both snapshots ride the inherited append-only history…
@@ -307,11 +303,11 @@ describe('fork inheritance', () => {
     // carries no history. The child must then deliver its own snapshot, which
     // is not a duplicate: the model in that child has seen nothing.
     const f = await fixture('fresh', 'FRESH FORK BODY')
-    forkOnParentRequest(0)
+    forkOnParentRequest(f.parent, 0)
     await f.prompt(f.parent, 'one')
 
     expect(f.children).toHaveLength(1)
-    const childReqs = childRequests()
+    const childReqs = requestsOf(f.children[0] as Agent)
     expect(childReqs.length).toBeGreaterThan(0)
     const delivered = rulesOf(childReqs[0])
     expect(delivered).toHaveLength(1)

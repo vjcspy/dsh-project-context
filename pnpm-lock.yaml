@@ -33,6 +33,9 @@ importers:
       '@deepseek-ai/dsh-agent-loop-testkit':
         specifier: link:../deepseek-harness/packages/test-support/agent-loop-testkit
         version: link:../deepseek-harness/packages/test-support/agent-loop-testkit
+      '@deepseek-ai/dsh-agent-preset-registry':
+        specifier: link:../deepseek-harness/packages/preset/agent-preset-registry
+        version: link:../deepseek-harness/packages/preset/agent-preset-registry
       '@deepseek-ai/dsh-api-remotes':
         specifier: link:../deepseek-harness/packages/api/remotes
         version: link:../deepseek-harness/packages/api/remotes
@@ -78,6 +81,9 @@ importers:
       '@deepseek-ai/dsh-mcp-client':
         specifier: link:../deepseek-harness/packages/mcp/mcp-client
         version: link:../deepseek-harness/packages/mcp/mcp-client
+      '@deepseek-ai/dsh-persona':
+        specifier: link:../deepseek-harness/packages/preset/persona
+        version: link:../deepseek-harness/packages/preset/persona
       '@deepseek-ai/dsh-scope':
         specifier: link:../deepseek-harness/packages/core/scope
         version: link:../deepseek-harness/packages/core/scope
@@ -87,6 +93,9 @@ importers:
       '@deepseek-ai/dsh-session-persistence':
         specifier: link:../deepseek-harness/packages/session/session-persistence
         version: link:../deepseek-harness/packages/session/session-persistence
+      '@deepseek-ai/dsh-session-persistence-jsonl':
+        specifier: link:../deepseek-harness/packages/session/session-persistence-jsonl
+        version: link:../deepseek-harness/packages/session/session-persistence-jsonl
       '@deepseek-ai/dsh-session-projection':
         specifier: link:../deepseek-harness/packages/session/session-projection
         version: link:../deepseek-harness/packages/session/session-projection

@@ -1,26 +1,105 @@
 /**
  * Real-composition harness: the production AgentLoop, tool registry,
- * system-prompt registry, subagent runtime and the real in-process `spawn`
- * provider, with a recording LLM adapter so the FIRST model request can be
- * asserted rather than merely the registry contents.
+ * system-prompt registry, Agent Preset registry, subagent runtime and the real
+ * in-process `spawn` provider, with a recording LLM adapter so the FIRST model
+ * request can be asserted rather than merely the registry contents.
  */
 
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { Context } from '@deepseek-ai/cordis'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { Context, Service } from '@deepseek-ai/cordis'
+import Loader from '@deepseek-ai/cordis-plugin-loader'
+import Include from '@deepseek-ai/cordis-plugin-include'
+import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { SessionId as sessionId } from '@deepseek-ai/dsh-session'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { createUserMessage, LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SpawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import * as ProjectAgents from '../../src/index.ts'
 import type { Config } from '../../src/types.ts'
+
+/**
+ * Directory collaborator for a composition with no filesystem.
+ *
+ * The `workingDirectory` seam is what the subagent runtime injects before it
+ * can own `ctx.subagents`, and a delegation resolves the child's directory
+ * through `set`. Mirroring the subagent package's own fixture
+ * (`packages/subagent/subagent/tests/working-directory-fixture.ts`) keeps this
+ * harness free of a real filesystem, which the specs that mount their own
+ * `fs` service would otherwise collide with.
+ */
+export class FixtureWorkingDirectory extends Service {
+  private readonly directories = new WeakMap<Session, string>()
+
+  constructor(ctx: Context) {
+    super(ctx, 'workingDirectory')
+  }
+
+  get(session: Session): string {
+    return this.directories.get(session) ?? session.header.cwd ?? process.cwd()
+  }
+
+  async ensure(agent: Agent, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted()
+    return this.get(agent.session)
+  }
+
+  async set(agent: Agent, path: string, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted()
+    const cwd = resolve(this.get(agent.session), path)
+    this.directories.set(agent.session, cwd)
+    return cwd
+  }
+}
+
+/** Collaborators a composition needs before this plugin can mount a delegation tool. */
+export interface DelegationDependencies {
+  /** Dispose every collaborator and remove the session root. */
+  dispose(): Promise<void>
+}
+
+/**
+ * Mount what a delegation composition needs beyond the AgentLoop prerequisites.
+ *
+ * Three separate seams, each load-bearing for the same reason: without it the
+ * plugin's per-agent tool silently never registers, and every assertion about a
+ * generated tool reads as a plugin defect instead.
+ *
+ * - `workingDirectory` — the subagent runtime does not publish `ctx.subagents`
+ *   until its own dependency resolves, and starting a child resolves the child's
+ *   directory through `set`. The fixture supplies all three operations without
+ *   mounting a filesystem, which several specs mount themselves.
+ * - `agentPresets` — the delegation contract selects a preset, and
+ *   `tool-subagent` validates the configured id through `readDocument`.
+ * - a durable session backend — every in-process child is continuable, and the
+ *   provider refuses to start one without it (`PERSISTENCE_UNAVAILABLE`).
+ * @param ctx - the composition's root context.
+ * @returns the disposer owning every mounted collaborator.
+ */
+export async function mountDelegationDependencies(ctx: Context): Promise<DelegationDependencies> {
+  const fibers: Array<{ dispose: () => Promise<void> }> = []
+  fibers.push(await ctx.plugin(FixtureWorkingDirectory))
+  fibers.push(await ctx.plugin(Loader))
+  ctx.loader.builtins.include = Include
+  fibers.push(await ctx.plugin(AgentPresets, { default: 'standard' }))
+  const sessionRoot = mkdtempSync(join(tmpdir(), 'dsh-project-context-sessions-'))
+  fibers.push(await ctx.plugin(JsonlSessionPersistence, { root: sessionRoot }))
+  return {
+    async dispose() {
+      for (const fiber of fibers.reverse()) await fiber.dispose()
+      rmSync(sessionRoot, { recursive: true, force: true })
+    },
+  }
+}
 
 /** Every request this adapter was asked to stream, in order. */
 export const recordedRequests: GenerateOptions[] = []
@@ -163,9 +242,15 @@ export async function boot(
   recordedRequests.length = 0
   script = () => ({ kind: 'text', text: 'ok' })
   const ctx = new Context()
+  // A preset row is a module specifier, and every preset this plugin registers
+  // names the first-party persona package, so the tree needs a base that
+  // resolves it exactly as the installed profile resolves it from the dsh
+  // installation: this package's own root.
+  ctx.baseUrl = `${pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '..', '..')).href}/`
   await mountAgentLoopTestDependencies(ctx)
+  const dependencies = await mountDelegationDependencies(ctx)
   ctx.llm.registerAdapter(['mock'], new RecordingAdapter())
-  const fibers: Array<{ dispose: () => Promise<void> }> = []
+  const fibers: Array<{ dispose: () => Promise<void> }> = [dependencies]
   // The `commands` service. It is a plain service plugin with no `inject` of
   // its own, so mounting it here creates `ctx.commands` immediately and adds no
   // further service edge: `register`/`find` are local-only calls and need

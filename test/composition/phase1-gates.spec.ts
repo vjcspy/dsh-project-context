@@ -28,6 +28,7 @@ import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SpawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import * as AgentInstructions from '@deepseek-ai/dsh-agent-instructions'
 import FsLocal from '@deepseek-ai/dsh-fs-local'
+import { mountDelegationDependencies } from './harness.ts'
 import * as ProjectAgents from '../../src/index.ts'
 
 const requests: GenerateOptions[] = []
@@ -97,6 +98,7 @@ test('GATE 1: agent/created fires for child (spawned subagent) agents', async ()
 
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  disposers.push((await mountDelegationDependencies(ctx)).dispose)
   ctx.llm.registerAdapter(['mock'], new ProbeAdapter())
 
   /** Every Agent published while this listener is mounted, with its parentage. */
@@ -183,6 +185,7 @@ async function bootOrderProbe(probeFirst: boolean): Promise<string[]> {
 
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  disposers.push((await mountDelegationDependencies(ctx)).dispose)
   ctx.llm.registerAdapter(['mock'], new ProbeAdapter())
   disposers.push((await ctx.plugin(FsLocal, { cwd: project })).dispose)
 
@@ -244,6 +247,7 @@ test('GATE 2c: position is stable across repeated steps in one session', async (
   writeFileSync(join(project, 'AGENTS.md'), '# repo rules\nAlways be brief.\n', 'utf8')
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  disposers.push((await mountDelegationDependencies(ctx)).dispose)
   ctx.llm.registerAdapter(['mock'], new ProbeAdapter())
   disposers.push((await ctx.plugin(FsLocal, { cwd: project })).dispose)
   disposers.push((await ctx.plugin(AgentInstructions, { maxBytes: 65536 })).dispose)
@@ -277,6 +281,7 @@ test('GATE 3: a pre-step folding plugin works WITHOUT injecting sessionProjectio
   const project = makeProject('inject')
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  disposers.push((await mountDelegationDependencies(ctx)).dispose)
   ctx.llm.registerAdapter(['mock'], new ProbeAdapter())
   // The probe declares no `inject` at all — no `sessionProjections`, no `fs`.
   disposers.push((await ctx.plugin(orderProbePlugin({ marker: 'PROBE-MARKER' }))).dispose)

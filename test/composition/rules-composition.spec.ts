@@ -32,6 +32,7 @@ import { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import * as AgentInstructions from '@deepseek-ai/dsh-agent-instructions'
 import FsLocal from '@deepseek-ai/dsh-fs-local'
+import { mountDelegationDependencies } from './harness.ts'
 import * as ProjectContext from '../../src/index.ts'
 import type { Config } from '../../src/types.ts'
 
@@ -116,6 +117,7 @@ async function boot(
 ): Promise<Booted> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  disposers.push((await mountDelegationDependencies(ctx)).dispose)
   ctx.llm.registerAdapter(['mock'], new ProbeAdapter())
   if (options.instructions !== false && options.instructions !== undefined) {
     disposers.push((await ctx.plugin(FsLocal, { cwd: options.fsCwd ?? process.cwd() })).dispose)
@@ -510,6 +512,7 @@ describe('reload and recovery', () => {
     p.write('a.md', 'BODY')
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx)
+    disposers.push((await mountDelegationDependencies(ctx)).dispose)
     ctx.llm.registerAdapter(['mock'], new ProbeAdapter())
     const fiber = await ctx.plugin(ProjectContext, {})
     disposers.push((await ctx.plugin(AgentLoop, { agents: [] })).dispose)
@@ -665,6 +668,7 @@ describe('reject and no-step turns', () => {
     p.write('a.md', 'DEFERRED BODY')
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx)
+    disposers.push((await mountDelegationDependencies(ctx)).dispose)
     ctx.llm.registerAdapter(['mock'], new ProbeAdapter())
     disposers.push((await ctx.plugin(ProjectContext, {})).dispose)
     let rejecting = true
