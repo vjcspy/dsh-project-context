@@ -36,6 +36,7 @@ import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SpawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const builtEntry = join(packageRoot, 'lib', 'index.js')
@@ -108,6 +109,7 @@ test('the BUILT plugin registers .dsh/commands and delivers the argument to a re
     "- name: '@deepseek-ai/dsh-session-projection'",
     "- name: '@deepseek-ai/dsh-system-prompt'",
     "- name: '@deepseek-ai/dsh-tools'",
+    "- name: '@deepseek-ai/dsh-tool-executor-native'",
     "- name: '@deepseek-ai/dsh-agent'",
     // The service the capability injects on each Agent context. It is mounted
     // BEFORE the plugin so `agent.ctx.inject(['commands'], …)` resolves.
@@ -130,6 +132,7 @@ test('the BUILT plugin registers .dsh/commands and delivers the argument to a re
     ['@deepseek-ai/dsh-session-projection', SessionProjectionRegistry],
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
     ['@deepseek-ai/dsh-tools', ToolRuntime],
+    ['@deepseek-ai/dsh-tool-executor-native', NativeToolExecutor],
     ['@deepseek-ai/dsh-agent', AgentRegistry],
     ['@deepseek-ai/dsh-commands', CommandRuntime],
     ['@deepseek-ai/dsh-subagent', SubagentRuntime],

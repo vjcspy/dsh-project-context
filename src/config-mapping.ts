@@ -155,7 +155,7 @@ export function resolveAgents(
  * Project one resolved agent onto the first-party delegation-tool config.
  *
  * The removed keys are gone on purpose: `persona` and `toolFilter` are refused
- * outright by this baseline (`packages/subagent/tool-subagent/src/index.ts:147-151`)
+ * outright by this baseline (`packages/subagent/tool-subagent/src/index.ts:151-155`)
  * and `backgroundMode` no longer exists, so the child's identity travels in the
  * Agent Preset named by `agentPreset` instead.
  * @param agent - one resolved agent.
@@ -171,8 +171,8 @@ export function toSubagentConfig(agent: ResolvedAgent, agentPreset?: string): Su
     provider: agent.transport,
     toolName: agent.toolName,
     // Per-agent models are fixed by the markdown; runtime override would add
-    // three parameters to every tool schema for no requested benefit.
-    modelSelectionSettings: false,
+    // model-route parameters to every tool schema for no requested benefit.
+    modelSelection: false,
     // The markdown body is the preset's persona row, and the preset is where
     // this baseline reads a child's identity and its tool composition.
     ...(agentPreset === undefined ? {} : { agentPreset }),

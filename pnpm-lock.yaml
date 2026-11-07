@@ -117,6 +117,9 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: link:../deepseek-harness/packages/core/system-prompt
         version: link:../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/dsh-tool-executor-native':
+        specifier: link:../deepseek-harness/packages/core/tool-executor-native
+        version: link:../deepseek-harness/packages/core/tool-executor-native
       '@deepseek-ai/dsh-tool-subagent':
         specifier: link:../deepseek-harness/packages/subagent/tool-subagent
         version: link:../deepseek-harness/packages/subagent/tool-subagent

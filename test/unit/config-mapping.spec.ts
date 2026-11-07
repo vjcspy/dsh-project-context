@@ -102,7 +102,7 @@ describe('config mapping', () => {
 
   test('model selection settings stay off so the tool schema gains no parameters', () => {
     const [agent] = resolve([discovered('a')]).agents
-    expect(toSubagentConfig(agent as ResolvedAgent, 'preset-a').modelSelectionSettings).toBe(false)
+    expect(toSubagentConfig(agent as ResolvedAgent, 'preset-a').modelSelection).toBe(false)
   })
 
   test('the agent preset is what names the child composition', () => {

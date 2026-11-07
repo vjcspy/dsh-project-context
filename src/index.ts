@@ -18,8 +18,9 @@
  * and no tool filter, so one Agent Preset per definition carries the markdown
  * body and the composition the delegating Agent already runs, and the mounted
  * tool selects it with `agentPreset`. The preset is registered in the same
- * fiber as the tool that names it, so the id `apply()` validates is never a
- * race; a preset id is deployment-wide, so `presetLeases` reuses one definition
+ * fiber as the tool that names it, so the id the delegation resolves when it
+ * starts a child exists whenever the tool is visible; a preset id is
+ * deployment-wide, so `presetLeases` reuses one definition
  * across the Sessions of a project and disposes it with its last holder.
  *
  * Two lifecycle facts constrain everything here:
@@ -174,16 +175,24 @@ export function apply(ctx: Context, config: Config = {}): void {
   const commandsEnabled = !Object.hasOwn(config, 'commands') || config.commands === true
   // Validate the managed servers before a settings write persists. The schema
   // covers shape and bounds; this hook adds the per-transport requirements it
-  // cannot express. It also runs at load, so a bad profile entry fails loud
-  // instead of at first mount. `this === ctx.fiber` scopes it to our entry.
-  ctx.on('internal/config', function (_raw, next) {
+  // cannot express. `fiber === ctx.fiber` scopes it to our entry, and it
+  // guards every candidate resolved after `apply` ran (a settings write).
+  //
+  // `prepend` is load-bearing: `waterfall` runs listeners in registration
+  // order and each one's `next()` enters the next. Cordis's own listener,
+  // registered first, resolves the schema AFTER its `next()`, and the Loader's
+  // interpolates after its own, so an appended listener would see the raw
+  // candidate, where `mcp.servers` is a plain array rather than the volatile
+  // reference. As the outermost listener, `next()` returns the interpolated,
+  // schema-resolved value the validator is written for.
+  ctx.on('internal/config', (fiber, next) => {
     const value = next()
-    if (this === ctx.fiber) {
+    if (fiber === ctx.fiber) {
       const servers = (value as { mcp?: { servers?: { get(): readonly McpServerEntry[] } } }).mcp?.servers?.get() ?? []
       validateManagerConfig({ servers })
     }
     return value
-  })
+  }, { prepend: true })
 
   const installed = new Map<Agent, () => void>()
   const rosters = new WeakMap<Agent, Roster>()
@@ -453,9 +462,10 @@ export function apply(ctx: Context, config: Config = {}): void {
           } else {
             let lease: { id: string; dispose: () => Promise<void> }
             try {
-              // The preset is registered BEFORE the tool that names it: `apply`
-              // validates a direct-apply session's preset with `readDocument`, so
-              // the other order would reject the mount it is about to make.
+              // The preset is registered BEFORE the tool that names it, so the
+              // id is resolvable whenever the tool is visible: the delegation
+              // resolves `agentPreset` when it starts a child, and a missing id
+              // would fail that call rather than the mount.
               lease = acquirePreset(runtimeCtx.agentPresets, agent, resolved)
             } catch (error: unknown) {
               ctx.logger.warn(`dsh-project-context: skipped ${resolved.path} — Agent Preset registration failed: ${String(error)}`)
@@ -470,7 +480,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             // Registration is deferred to this fiber precisely so a provider
             // that activates in parallel is not lost to a synchronous race;
             // `ToolSubagent.apply` itself handles a provider that appears later.
-            ToolSubagent.apply(runtimeCtx, toSubagentConfig(resolved, preset?.id), agent.session)
+            ToolSubagent.apply(runtimeCtx, toSubagentConfig(resolved, preset?.id))
             mountedToolNames.add(resolved.toolName)
           } catch (error: unknown) {
             ctx.logger.warn(`dsh-project-context: skipped ${resolved.path} — mount failed: ${String(error)}`)
