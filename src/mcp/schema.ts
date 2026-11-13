@@ -230,6 +230,11 @@ export function resolveMcpServer(entry: McpServerEntryResolved): McpClientConfig
   const shared = {
     serverName: entry.serverName,
     toolCallTimeoutMs: entry.toolCallTimeoutMs,
+    // The client's Config requires both lifecycle fields; these are its
+    // own schema defaults (`packages/mcp/mcp-client/src/index.ts:49,171,184`
+    // at `dsh-v0.2.2-rc.3`), so this mount's lifecycle is unchanged.
+    closeTimeoutMs: 5_000,
+    expandTemplates: false,
     // Always soft: a server that is down must not veto plugin activation, and
     // the mount path reports the failure through its own state instead.
     failOnStartupError: false,
