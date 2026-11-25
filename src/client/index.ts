@@ -1,12 +1,16 @@
 /**
- * MCP servers Settings section, browser half.
+ * Browser half: two `settings.section` pages.
  *
- * The card is contributed to `settings.section`, so the shell renders it as
- * its own Settings page. Reads ride `ctx.configForms.describe()`, the one
- * shared describe mirror; writes go through `mutate` with an explicit path and
- * the revision that was read. `replace` is deliberately never used: a document
- * rebuilt from a redacted wire view would silently delete every env and header
- * value the wire never returned.
+ * The MCP card reads `ctx.configForms.describe()`, the one shared describe
+ * mirror, and writes through `mutate` with an explicit path and the revision
+ * that was read. `replace` is deliberately never used: a document rebuilt from a
+ * redacted wire view would silently delete every env and header value the wire
+ * never returned.
+ *
+ * The Subagents route card reads and writes through the plugin's own
+ * authenticated exact Fetch route instead: its subject is a project markdown
+ * file under one resolved platform root, which the settings namespace cannot
+ * address by construction.
  *
  * @module dsh-project-context/client
  */
@@ -23,10 +27,22 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { McpSectionSnapshot, McpServerSection, McpServersSectionInjected } from './McpServersSection.ts'
 import { McpServersSection } from './McpServersSection.ts'
+import type { SubagentRoutesSectionInjected } from './SubagentRoutesSection.ts'
+import { SubagentRoutesSection } from './SubagentRoutesSection.ts'
 import { bind, en, zh } from './locales.ts'
 
 export type { McpSectionSnapshot, McpServerSection, McpServersSectionInjected } from './McpServersSection.ts'
 export { McpServersSection } from './McpServersSection.ts'
+export type {
+  RowMountability,
+  SubagentCatalog,
+  SubagentCatalogProvider,
+  SubagentEffortsBody,
+  SubagentRouteRow,
+  SubagentRoutesListing,
+  SubagentRoutesSectionInjected,
+} from './SubagentRoutesSection.ts'
+export { SUBAGENT_ROUTES, SubagentRoutesSection } from './SubagentRoutesSection.ts'
 
 /** Settings namespace this plugin owns: its own profile entry id. Spelled identically in both halves. */
 export const MCP_NAMESPACE = 'dsh-project-context'
@@ -133,6 +149,18 @@ export function apply(ctx: ClientContext): void {
     label: () => copy('nav'),
     inject: (): McpServersSectionInjected => face,
   }, McpServersSection))
+
+  // The Subagents card. Hoisted for the same identity reason as `face`: the shell
+  // may re-invoke `inject` on every render.
+  const routesFace: SubagentRoutesSectionInjected = { copy }
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'subagent-routes',
+    // Directly after the MCP servers page.
+    order: 31,
+    label: () => copy('routesNav'),
+    inject: (): SubagentRoutesSectionInjected => routesFace,
+  }, SubagentRoutesSection))
 }
 
 /**

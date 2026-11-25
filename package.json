@@ -1,6 +1,6 @@
 {
   "name": "dsh-project-context",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "dsh plugin: project-scoped context. Discovers markdown agent definitions under a project root and mounts them as first-party dsh-tool-subagent instances per Agent scope, loads markdown rule files from <projectRoot>/.dsh/rules into every Agent as a durable, self-superseding user message, and registers markdown command files from <projectRoot>/.dsh/commands as Agent-scoped DSH slash commands. Registers no tool of its own.",
   "type": "module",
   "main": "lib/index.js",
@@ -53,6 +53,7 @@
     "@deepseek-ai/cordis": ">=4.1.0",
     "@deepseek-ai/dsh-agent": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-agent-preset-registry": ">=0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.7-rc.2",
     "@deepseek-ai/dsh-commands": ">=0.1.6-alpha.1",
     "@deepseek-ai/dsh-credentials": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-host-webserver": ">=0.1.5-rc.1",
@@ -76,6 +77,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-agent-preset-registry": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
       "optional": true
     },
     "@deepseek-ai/dsh-commands": {
@@ -131,6 +135,7 @@
     "@deepseek-ai/dsh-agent-loop-testkit": "link:../deepseek-harness/packages/test-support/agent-loop-testkit",
     "@deepseek-ai/dsh-agent-preset-registry": "link:../deepseek-harness/packages/preset/agent-preset-registry",
     "@deepseek-ai/dsh-api-remotes": "link:../deepseek-harness/packages/api/remotes",
+    "@deepseek-ai/dsh-client-connection": "link:../deepseek-harness/packages/client/connection",
     "@deepseek-ai/dsh-client-locale": "link:../deepseek-harness/packages/client/locale",
     "@deepseek-ai/dsh-client-ui-renderer": "link:../deepseek-harness/packages/client/ui-renderer",
     "@deepseek-ai/dsh-client-ui-settings": "link:../deepseek-harness/packages/client/ui-settings",

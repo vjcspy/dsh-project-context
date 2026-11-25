@@ -90,7 +90,9 @@ function cardFace(value: unknown): CardFace {
     configForms: { describe: () => mirrorOf(value), get: () => ({ mutate: () => Promise.resolve() }) },
     slots: {
       inject(_name: string, contribute: () => unknown) { contribute() },
-      register(registration: { inject: () => CardFace }) { captured = registration },
+      register(registration: { id: string; inject: () => CardFace }) {
+        if (registration.id === 'mcp-servers') captured = registration
+      },
     },
   }
   ;(exports['apply'] as (context: unknown) => void)(ctx)
@@ -153,7 +155,9 @@ describe('card snapshot stability', () => {
       },
       slots: {
         inject(_name: string, contribute: () => unknown) { contribute() },
-        register(registration: { inject: () => { read: () => unknown } }) { captured = registration },
+        register(registration: { id: string; inject: () => { read: () => unknown } }) {
+          if (registration.id === 'mcp-servers') captured = registration
+        },
       },
     }
     ;(exports['apply'] as (context: unknown) => void)(ctx)
@@ -217,7 +221,9 @@ describe('card writes', () => {
       },
       slots: {
         inject(_name: string, contribute: () => unknown) { contribute() },
-        register(registration: { inject: () => unknown }) { captured = registration },
+        register(registration: { id: string; inject: () => unknown }) {
+          if (registration.id === 'mcp-servers') captured = registration
+        },
       },
     }
     ;(exports['apply'] as (context: unknown) => void)(ctx)

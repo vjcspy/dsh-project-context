@@ -77,6 +77,7 @@ import { validateManagerConfig } from './mcp/schema.ts'
 import { MCP_NAMESPACE } from './mcp/types.ts'
 import type { McpServerEntry } from './mcp/types.ts'
 import './message-source.ts'
+import { liveAgentCwds } from './platform-root.ts'
 import { resolveRuleBounds, scanRules } from './rules-discovery.ts'
 import type { Config } from './schema.ts'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
@@ -89,6 +90,7 @@ import {
   syncRulesInbox,
   type RulesState,
 } from './rules-reconcile.ts'
+import { mountSubagentRoutes } from './subagent-routes/index.ts'
 import type { Capability, Diagnostic, ResolvedAgent, ResourceBounds, Roster } from './types.ts'
 
 export const name = 'dsh-project-context'
@@ -482,6 +484,16 @@ export function apply(ctx: Context, config: Config = {}): void {
             // `ToolSubagent.apply` itself handles a provider that appears later.
             ToolSubagent.apply(runtimeCtx, toSubagentConfig(resolved, preset?.id))
             mountedToolNames.add(resolved.toolName)
+            // One line per mounted PROJECT definition, naming the route the
+            // install pass actually consumed. A route edit only takes effect in a
+            // new Session, so this is the only way to prove the saved route
+            // reached a mount without spending a live model call on it.
+            if (resolved.layer === 'project') {
+              ctx.logger.info(
+                `dsh-project-context: mounted ${resolved.toolName} provider=${resolved.llm?.provider ?? '(none)'} `
+                  + `model=${resolved.llm?.model ?? '(none)'} reasoningEffort=${resolved.llm?.reasoningEffort ?? '(default)'}`,
+              )
+            }
           } catch (error: unknown) {
             ctx.logger.warn(`dsh-project-context: skipped ${resolved.path} — mount failed: ${String(error)}`)
           }
@@ -879,6 +891,22 @@ export function apply(ctx: Context, config: Config = {}): void {
         return () => {}
       }
     }, 'dsh-project-context.mcpHealthRoute()')
+  })
+
+  // ── subagent route settings ──────────────────────────────────────────────
+  // The Subagents card's listing and its one write. Both ride ONE exact Fetch
+  // route on the authenticated `/api` channel (`subagent-routes/index.ts`), so
+  // this block registers no route of its own; it supplies the services a request
+  // needs. Every read is deferred to request time: `llm` and `subagents` may
+  // activate after this plugin does, and the live Agent list changes as Sessions
+  // open and close.
+  mountSubagentRoutes(ctx, {
+    config,
+    bounds,
+    listAgentCwds: () => liveAgentCwds(ctx.agents.list()),
+    llm: () => ctx.get('llm'),
+    subagentProvider: transport => ctx.get('subagents')?.getProvider(transport),
+    warn: message => ctx.logger.warn(message),
   })
 
   ctx.effect(() => () => {

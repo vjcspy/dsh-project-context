@@ -35,9 +35,19 @@ export interface Config extends Omit<PlainConfig, 'mcp'> {
  * running reference and emits `loader/volatile-update` instead of remounting
  * the plugin. The `mcp` object carries a default so the reference exists even
  * for a composition that omits the `mcp` block entirely.
+ *
+ * `agents.platformRoot` is ORDINARY, not volatile, and carries no default on
+ * purpose: it is the write authority the Subagents route card resolves against,
+ * an explicit deployment fact, and a filled-in default would silently point that
+ * card at whatever the plugin guessed. It is validated at load (it must be a
+ * string) and again at use, where an invalid value is an error rather than a
+ * fall-through — see `platform-root.ts`.
  */
 export const Config = z.object({
   mcp: z.object({
     servers: mcpServersSchema.volatile(),
   }).default({}),
+  agents: z.object({
+    platformRoot: z.string().description('absolute Aweave platform root; validated at use'),
+  }),
 })

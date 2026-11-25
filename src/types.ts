@@ -364,6 +364,19 @@ export interface Config {
    * `env`/`headers` value is a credential reference rather than a secret.
    */
   readonly mcp?: { readonly servers: Volatile<readonly McpServerEntry[]> }
+  /**
+   * Agent-definition write authority, read by the Subagents route settings card.
+   *
+   * `platformRoot` is the absolute Aweave platform root the card may rewrite
+   * `.dsh/agents/*.md` under. It is validated at USE, not merely at load: an
+   * invalid value is an error the card renders, never a fall-through to a root
+   * derived from whatever Session happens to be open. Absence is deliberate and
+   * keeps the zero-configuration paths (`AWEAVE_DEVTOOLS_ROOT`, a single live
+   * Agent cwd) explicit rather than hidden behind a default.
+   */
+  readonly agents?: {
+    readonly platformRoot?: string
+  }
 }
 
 /** Immutable roster resolved for one top-level Agent lineage. */

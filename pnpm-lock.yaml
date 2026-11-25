@@ -39,6 +39,9 @@ importers:
       '@deepseek-ai/dsh-api-remotes':
         specifier: link:../deepseek-harness/packages/api/remotes
         version: link:../deepseek-harness/packages/api/remotes
+      '@deepseek-ai/dsh-client-connection':
+        specifier: link:../deepseek-harness/packages/client/connection
+        version: link:../deepseek-harness/packages/client/connection
       '@deepseek-ai/dsh-client-locale':
         specifier: link:../deepseek-harness/packages/client/locale
         version: link:../deepseek-harness/packages/client/locale
